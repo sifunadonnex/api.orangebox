@@ -1,0 +1,115 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model User {
+  id        String        @id @default(cuid())
+  email     String     @unique
+  role      String?    @default("client")
+  fullName  String?
+  designation String?
+  department String?
+  gateId    String?
+  username  String?
+  password  String?
+  image     String?
+  company   String?
+  phone    String?
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  Aircraft  Aircraft[]
+}
+
+model Csv {
+  id        String      @id @default(cuid())
+  name      String
+  file      String
+  status    String?
+  departure String?
+  pilot     String?
+  destination String?
+  flightHours String?
+  aircraftId String     // Corrected field name
+  aircraft  Aircraft @relation(fields: [aircraftId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  Exceedance Exceedance[]
+}
+
+model Aircraft {
+  id           String          @id @default(cuid())
+  airline      String
+  aircraftMake String
+  modelNumber  String?
+  serialNumber String
+  userId       String
+  parameters   String?
+  user         User         @relation(fields: [userId], references: [id])
+  csv          Csv[]
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  Flight       Flight[]
+  EventLog     EventLog[]
+  Exceedance   Exceedance[]
+}
+
+model Flight {
+  id         String      @id @default(cuid())
+  name       String
+  aircraftId String
+  aircraft   Aircraft @relation(fields: [aircraftId], references: [id])
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model EventLog {
+  id              String      @id @default(cuid())
+  eventName       String?
+  displayName     String
+  eventCode       String
+  eventDescription String
+  eventParameter  String
+  eventTrigger    String
+  eventType       String
+  flightPhase     String
+  high            String?
+  high1           String?
+  high2           String?
+  low             String?
+  low1          String?
+  low2          String?
+  sop             String
+  aircraftId      String
+  exceedance     Exceedance[]
+  aircraft        Aircraft @relation(fields: [aircraftId], references: [id])
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model Exceedance {
+  id              String      @id @default(cuid())
+  exceedanceValues String
+  flightPhase     String
+  parameterName   String
+  description     String
+  eventStatus     String 
+  aircraftId      String
+  flightId        String
+  file            String?
+  eventId         String?
+  comment	  String?
+  exceedanceLevel String?
+  eventlog        EventLog? @relation(fields: [eventId], references: [id])
+  aircraft        Aircraft @relation(fields: [aircraftId], references: [id])
+  csv             Csv @relation(fields: [flightId], references: [id])
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
