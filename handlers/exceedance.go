@@ -151,23 +151,27 @@ func (h *ExceedanceHandler) GetExceedanceByID(c *gin.Context) {
 	var aircraft models.Aircraft
 	
 	// Nullable fields for joins
-	var eventLogID, eventLogCreatedAt, eventLogUpdatedAt sql.NullString
-	var csvID, csvCreatedAt, csvUpdatedAt sql.NullString
-	var aircraftID, aircraftCreatedAt, aircraftUpdatedAt sql.NullString
+	var eventLogID sql.NullString
+	var eventLogCreatedAtUnix, eventLogUpdatedAtUnix sql.NullInt64
+	var csvID sql.NullString
+	var csvCreatedAtUnix, csvUpdatedAtUnix sql.NullInt64
+	var aircraftID sql.NullString
+	var aircraftCreatedAtUnix, aircraftUpdatedAtUnix sql.NullInt64
+	var exceedanceCreatedAtUnix, exceedanceUpdatedAtUnix sql.NullInt64
 
 	row := h.db.QueryRow(query, id)
 	err := row.Scan(&exceedance.ID, &exceedance.ExceedanceValues, &exceedance.FlightPhase,
 		&exceedance.ParameterName, &exceedance.Description, &exceedance.EventStatus,
 		&exceedance.AircraftID, &exceedance.FlightID, &exceedance.File, &exceedance.EventID,
-		&exceedance.Comment, &exceedance.ExceedanceLevel, &exceedance.CreatedAt, &exceedance.UpdatedAt,
+		&exceedance.Comment, &exceedance.ExceedanceLevel, &exceedanceCreatedAtUnix, &exceedanceUpdatedAtUnix,
 		&eventLogID, &eventLog.EventName, &eventLog.DisplayName, &eventLog.EventCode,
 		&eventLog.EventDescription, &eventLog.EventParameter, &eventLog.EventTrigger, &eventLog.EventType,
 		&eventLog.FlightPhase, &eventLog.High, &eventLog.High1, &eventLog.High2, &eventLog.Low,
-		&eventLog.Low1, &eventLog.Low2, &eventLog.SOP, &eventLog.AircraftID, &eventLogCreatedAt, &eventLogUpdatedAt,
+		&eventLog.Low1, &eventLog.Low2, &eventLog.SOP, &eventLog.AircraftID, &eventLogCreatedAtUnix, &eventLogUpdatedAtUnix,
 		&csvID, &csv.Name, &csv.File, &csv.Status, &csv.Departure, &csv.Pilot,
-		&csv.Destination, &csv.FlightHours, &csv.AircraftID, &csvCreatedAt, &csvUpdatedAt,
+		&csv.Destination, &csv.FlightHours, &csv.AircraftID, &csvCreatedAtUnix, &csvUpdatedAtUnix,
 		&aircraftID, &aircraft.Airline, &aircraft.AircraftMake, &aircraft.ModelNumber,
-		&aircraft.SerialNumber, &aircraft.UserID, &aircraft.Parameters, &aircraftCreatedAt, &aircraftUpdatedAt)
+		&aircraft.SerialNumber, &aircraft.UserID, &aircraft.Parameters, &aircraftCreatedAtUnix, &aircraftUpdatedAtUnix)
 	
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Exceedance not found"})
@@ -178,19 +182,23 @@ func (h *ExceedanceHandler) GetExceedanceByID(c *gin.Context) {
 		return
 	}
 
+	// Handle exceedance timestamps
+	if exceedanceCreatedAtUnix.Valid {
+		exceedance.CreatedAt = time.Unix(exceedanceCreatedAtUnix.Int64/1000, 0)
+	}
+	if exceedanceUpdatedAtUnix.Valid {
+		exceedance.UpdatedAt = time.Unix(exceedanceUpdatedAtUnix.Int64/1000, 0)
+	}
+
 	// Handle nullable eventlog
 	var eventLogPtr *models.EventLog
 	if eventLogID.Valid {
 		eventLog.ID = eventLogID.String
-		if eventLogCreatedAt.Valid {
-			if t, err := time.Parse(time.RFC3339, eventLogCreatedAt.String); err == nil {
-				eventLog.CreatedAt = t
-			}
+		if eventLogCreatedAtUnix.Valid {
+			eventLog.CreatedAt = time.Unix(eventLogCreatedAtUnix.Int64/1000, 0)
 		}
-		if eventLogUpdatedAt.Valid {
-			if t, err := time.Parse(time.RFC3339, eventLogUpdatedAt.String); err == nil {
-				eventLog.UpdatedAt = t
-			}
+		if eventLogUpdatedAtUnix.Valid {
+			eventLog.UpdatedAt = time.Unix(eventLogUpdatedAtUnix.Int64/1000, 0)
 		}
 		eventLogPtr = &eventLog
 	}
@@ -198,30 +206,22 @@ func (h *ExceedanceHandler) GetExceedanceByID(c *gin.Context) {
 	// Handle csv
 	if csvID.Valid {
 		csv.ID = csvID.String
-		if csvCreatedAt.Valid {
-			if t, err := time.Parse(time.RFC3339, csvCreatedAt.String); err == nil {
-				csv.CreatedAt = t
-			}
+		if csvCreatedAtUnix.Valid {
+			csv.CreatedAt = time.Unix(csvCreatedAtUnix.Int64/1000, 0)
 		}
-		if csvUpdatedAt.Valid {
-			if t, err := time.Parse(time.RFC3339, csvUpdatedAt.String); err == nil {
-				csv.UpdatedAt = t
-			}
+		if csvUpdatedAtUnix.Valid {
+			csv.UpdatedAt = time.Unix(csvUpdatedAtUnix.Int64/1000, 0)
 		}
 	}
 
 	// Handle aircraft
 	if aircraftID.Valid {
 		aircraft.ID = aircraftID.String
-		if aircraftCreatedAt.Valid {
-			if t, err := time.Parse(time.RFC3339, aircraftCreatedAt.String); err == nil {
-				aircraft.CreatedAt = t
-			}
+		if aircraftCreatedAtUnix.Valid {
+			aircraft.CreatedAt = time.Unix(aircraftCreatedAtUnix.Int64/1000, 0)
 		}
-		if aircraftUpdatedAt.Valid {
-			if t, err := time.Parse(time.RFC3339, aircraftUpdatedAt.String); err == nil {
-				aircraft.UpdatedAt = t
-			}
+		if aircraftUpdatedAtUnix.Valid {
+			aircraft.UpdatedAt = time.Unix(aircraftUpdatedAtUnix.Int64/1000, 0)
 		}
 	}
 
@@ -255,13 +255,24 @@ func (h *ExceedanceHandler) GetExceedancesByFlightID(c *gin.Context) {
 	var exceedances []models.Exceedance
 	for rows.Next() {
 		var exceedance models.Exceedance
+		var createdAtUnix, updatedAtUnix sql.NullInt64
+		
 		err := rows.Scan(&exceedance.ID, &exceedance.ExceedanceValues, &exceedance.FlightPhase,
 			&exceedance.ParameterName, &exceedance.Description, &exceedance.EventStatus,
 			&exceedance.AircraftID, &exceedance.FlightID, &exceedance.File, &exceedance.EventID,
-			&exceedance.Comment, &exceedance.ExceedanceLevel, &exceedance.CreatedAt, &exceedance.UpdatedAt)
+			&exceedance.Comment, &exceedance.ExceedanceLevel, &createdAtUnix, &updatedAtUnix)
 		if err != nil {
 			continue
 		}
+
+		// Convert Unix timestamps to time.Time
+		if createdAtUnix.Valid {
+			exceedance.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
+		}
+		if updatedAtUnix.Valid {
+			exceedance.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
+		}
+		
 		exceedances = append(exceedances, exceedance)
 	}
 
@@ -289,7 +300,7 @@ func (h *ExceedanceHandler) CreateExceedances(c *gin.Context) {
 		_, err := h.db.Exec(query, id, exceedance.ExceedanceValues, exceedance.FlightPhase,
 			exceedance.ParameterName, exceedance.Description, exceedance.EventStatus,
 			exceedance.AircraftID, exceedance.FlightID, exceedance.File, exceedance.EventID,
-			exceedance.Comment, exceedance.ExceedanceLevel, now, now)
+			exceedance.Comment, exceedance.ExceedanceLevel, now.UnixMilli(), now.UnixMilli())
 		
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error creating exceedance"})
@@ -319,7 +330,7 @@ func (h *ExceedanceHandler) UpdateExceedance(c *gin.Context) {
 	now := time.Now()
 
 	query := `UPDATE Exceedance SET comment = ?, eventStatus = ?, updatedAt = ? WHERE id = ?`
-	result, err := h.db.Exec(query, req.Comment, req.EventStatus, now, id)
+	result, err := h.db.Exec(query, req.Comment, req.EventStatus, now.UnixMilli(), id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating exceedance"})
 		return
