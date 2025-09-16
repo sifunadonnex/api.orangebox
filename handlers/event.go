@@ -36,7 +36,7 @@ func (h *EventHandler) CreateEvent(c *gin.Context) {
 	
 	_, err := h.db.Exec(query, id, req.EventName, req.DisplayName, req.EventCode, req.EventDescription,
 		req.EventParameter, req.EventTrigger, req.EventType, req.FlightPhase, req.High, req.Low,
-		req.Low1, req.High1, req.Low2, req.High2, req.SOP, req.AircraftID, now, now)
+		req.Low1, req.High1, req.Low2, req.High2, req.SOP, req.AircraftID, now.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error creating event"})
 		return
@@ -86,26 +86,34 @@ func (h *EventHandler) GetEvents(c *gin.Context) {
 	for rows.Next() {
 		var event models.EventLog
 		var aircraft models.Aircraft
-		var aircraftCreatedAt, aircraftUpdatedAt sql.NullTime
+		var eventCreatedAtUnix, eventUpdatedAtUnix, aircraftCreatedAtUnix, aircraftUpdatedAtUnix sql.NullInt64
 
 		err := rows.Scan(&event.ID, &event.EventName, &event.DisplayName, &event.EventCode,
 			&event.EventDescription, &event.EventParameter, &event.EventTrigger, &event.EventType,
 			&event.FlightPhase, &event.High, &event.High1, &event.High2, &event.Low,
-			&event.Low1, &event.Low2, &event.SOP, &event.AircraftID, &event.CreatedAt, &event.UpdatedAt,
+			&event.Low1, &event.Low2, &event.SOP, &event.AircraftID, &eventCreatedAtUnix, &eventUpdatedAtUnix,
 			&aircraft.ID, &aircraft.Airline, &aircraft.AircraftMake, &aircraft.ModelNumber,
-			&aircraft.SerialNumber, &aircraft.UserID, &aircraft.Parameters, &aircraftCreatedAt, &aircraftUpdatedAt)
+			&aircraft.SerialNumber, &aircraft.UserID, &aircraft.Parameters, &aircraftCreatedAtUnix, &aircraftUpdatedAtUnix)
 		
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning event"})
 			return
 		}
 
-		// Handle nullable timestamps
-		if aircraftCreatedAt.Valid {
-			aircraft.CreatedAt = aircraftCreatedAt.Time
+		// Handle nullable timestamps for event
+		if eventCreatedAtUnix.Valid {
+			event.CreatedAt = time.Unix(eventCreatedAtUnix.Int64/1000, 0)
 		}
-		if aircraftUpdatedAt.Valid {
-			aircraft.UpdatedAt = aircraftUpdatedAt.Time
+		if eventUpdatedAtUnix.Valid {
+			event.UpdatedAt = time.Unix(eventUpdatedAtUnix.Int64/1000, 0)
+		}
+		
+		// Handle nullable timestamps for aircraft
+		if aircraftCreatedAtUnix.Valid {
+			aircraft.CreatedAt = time.Unix(aircraftCreatedAtUnix.Int64/1000, 0)
+		}
+		if aircraftUpdatedAtUnix.Valid {
+			aircraft.UpdatedAt = time.Unix(aircraftUpdatedAtUnix.Int64/1000, 0)
 		}
 
 		eventWithAircraft := struct {
@@ -129,11 +137,12 @@ func (h *EventHandler) GetEventByID(c *gin.Context) {
 	query := `SELECT id, eventName, displayName, eventCode, eventDescription, eventParameter, eventTrigger, eventType, flightPhase, high, high1, high2, low, low1, low2, sop, aircraftId, createdAt, updatedAt FROM EventLog WHERE id = ?`
 	
 	var event models.EventLog
+	var createdAtUnix, updatedAtUnix sql.NullInt64
 	row := h.db.QueryRow(query, id)
 	err := row.Scan(&event.ID, &event.EventName, &event.DisplayName, &event.EventCode,
 		&event.EventDescription, &event.EventParameter, &event.EventTrigger, &event.EventType,
 		&event.FlightPhase, &event.High, &event.High1, &event.High2, &event.Low,
-		&event.Low1, &event.Low2, &event.SOP, &event.AircraftID, &event.CreatedAt, &event.UpdatedAt)
+		&event.Low1, &event.Low2, &event.SOP, &event.AircraftID, &createdAtUnix, &updatedAtUnix)
 	
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Event not found"})
@@ -142,6 +151,13 @@ func (h *EventHandler) GetEventByID(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
+	}
+
+	if createdAtUnix.Valid {
+		event.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
+	}
+	if updatedAtUnix.Valid {
+		event.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
 	}
 
 	c.JSON(http.StatusOK, event)
@@ -162,7 +178,7 @@ func (h *EventHandler) UpdateEvent(c *gin.Context) {
 	
 	result, err := h.db.Exec(query, req.EventName, req.DisplayName, req.EventCode, req.EventDescription,
 		req.EventParameter, req.EventTrigger, req.EventType, req.FlightPhase, req.High, req.Low,
-		req.Low1, req.High1, req.Low2, req.High2, req.SOP, req.AircraftID, now, id)
+		req.Low1, req.High1, req.Low2, req.High2, req.SOP, req.AircraftID, now.UnixMilli(), id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating event"})
 		return

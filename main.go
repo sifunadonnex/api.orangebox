@@ -14,6 +14,7 @@ import (
 
 func main() {
 	// Initialize database
+	log.Println("Initializing database connection...")
 	db, err := database.InitDB()
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
@@ -21,6 +22,7 @@ func main() {
 	defer db.Close()
 
 	// Create Gin router
+	log.Println("Setting up Gin router...")
 	router := gin.Default()
 
 	// CORS configuration
@@ -42,6 +44,7 @@ func main() {
 	router.Use(middleware.ErrorHandler())
 
 	// Initialize handlers
+	log.Println("Initializing handlers...")
 	userHandler := handlers.NewUserHandler(db)
 	aircraftHandler := handlers.NewAircraftHandler(db)
 	csvHandler := handlers.NewCSVHandler(db)
@@ -49,7 +52,22 @@ func main() {
 	exceedanceHandler := handlers.NewExceedanceHandler(db)
 
 	// Public routes
+	log.Println("Setting up routes...")
 	router.POST("/login", userHandler.Login)
+	router.GET("/test-simple", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"message": "Server is working"})
+	})
+	router.GET("/test-db", func(c *gin.Context) {
+		// Test database connection and query
+		query := `SELECT COUNT(*) as count FROM User`
+		var count int
+		err := db.QueryRow(query).Scan(&count)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database test failed", "details": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "Database connected", "user_count": count})
+	})
 	router.GET("/", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "Hello World!"})
 	})

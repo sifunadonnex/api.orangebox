@@ -54,7 +54,7 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 	query := `INSERT INTO Csv (id, name, file, aircraftId, departure, destination, flightHours, pilot, createdAt, updatedAt) 
 			  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	
-	_, err = h.db.Exec(query, id, req.Name, filename, req.AircraftID, req.Departure, req.Destination, req.FlightHours, req.Pilot, now, now)
+	_, err = h.db.Exec(query, id, req.Name, filename, req.AircraftID, req.Departure, req.Destination, req.FlightHours, req.Pilot, now.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error saving CSV record"})
 		return
@@ -90,11 +90,20 @@ func (h *CSVHandler) GetCSVs(c *gin.Context) {
 	var csvs []interface{}
 	for rows.Next() {
 		var csv models.CSV
+		var createdAtUnix, updatedAtUnix sql.NullInt64
+		
 		err := rows.Scan(&csv.ID, &csv.Name, &csv.File, &csv.Status, &csv.Departure, &csv.Pilot,
-			&csv.Destination, &csv.FlightHours, &csv.AircraftID, &csv.CreatedAt, &csv.UpdatedAt)
+			&csv.Destination, &csv.FlightHours, &csv.AircraftID, &createdAtUnix, &updatedAtUnix)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning CSV"})
 			return
+		}
+
+		if createdAtUnix.Valid {
+			csv.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
+		}
+		if updatedAtUnix.Valid {
+			csv.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
 		}
 
 		// Get related exceedances
@@ -135,9 +144,26 @@ func (h *CSVHandler) GetCSVByID(c *gin.Context) {
 	query := `SELECT id, name, file, status, departure, pilot, destination, flightHours, aircraftId, createdAt, updatedAt FROM Csv WHERE id = ?`
 	
 	var csv models.CSV
+	var createdAtUnix, updatedAtUnix sql.NullInt64
 	row := h.db.QueryRow(query, id)
 	err := row.Scan(&csv.ID, &csv.Name, &csv.File, &csv.Status, &csv.Departure, &csv.Pilot,
-		&csv.Destination, &csv.FlightHours, &csv.AircraftID, &csv.CreatedAt, &csv.UpdatedAt)
+		&csv.Destination, &csv.FlightHours, &csv.AircraftID, &createdAtUnix, &updatedAtUnix)
+	
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "CSV not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		}
+		return
+	}
+
+	if createdAtUnix.Valid {
+		csv.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
+	}
+	if updatedAtUnix.Valid {
+		csv.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
+	}
 	
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "CSV not found"})
@@ -183,13 +209,23 @@ func (h *CSVHandler) getCSVExceedances(csvID string) ([]models.Exceedance, error
 	var exceedances []models.Exceedance
 	for rows.Next() {
 		var exceedance models.Exceedance
+		var createdAtUnix, updatedAtUnix sql.NullInt64
+		
 		err := rows.Scan(&exceedance.ID, &exceedance.ExceedanceValues, &exceedance.FlightPhase,
 			&exceedance.ParameterName, &exceedance.Description, &exceedance.EventStatus,
 			&exceedance.AircraftID, &exceedance.FlightID, &exceedance.File, &exceedance.EventID,
-			&exceedance.Comment, &exceedance.ExceedanceLevel, &exceedance.CreatedAt, &exceedance.UpdatedAt)
+			&exceedance.Comment, &exceedance.ExceedanceLevel, &createdAtUnix, &updatedAtUnix)
 		if err != nil {
 			continue
 		}
+		
+		if createdAtUnix.Valid {
+			exceedance.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
+		}
+		if updatedAtUnix.Valid {
+			exceedance.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
+		}
+		
 		exceedances = append(exceedances, exceedance)
 	}
 
