@@ -26,6 +26,7 @@ model User {
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
   Aircraft  Aircraft[]
+  notifications Notification[]
 }
 
 model Csv {
@@ -110,6 +111,20 @@ model Exceedance {
   eventlog        EventLog? @relation(fields: [eventId], references: [id])
   aircraft        Aircraft @relation(fields: [aircraftId], references: [id])
   csv             Csv @relation(fields: [flightId], references: [id])
+  notifications   Notification[]
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+}
+
+model Notification {
+  id              String      @id @default(cuid())
+  userId          String      // User to notify
+  exceedanceId    String      // Reference to the exceedance
+  message         String
+  level           String      // Level 1, 2, or 3
+  isRead          Boolean     @default(false)
+  user            User        @relation(fields: [userId], references: [id])
+  exceedance      Exceedance  @relation(fields: [exceedanceId], references: [id])
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
 }

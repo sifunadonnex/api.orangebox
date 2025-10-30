@@ -21,6 +21,13 @@ func main() {
 	}
 	defer db.Close()
 
+	// Run database migrations
+	log.Println("Running database migrations...")
+	if err := database.RunMigrations(db); err != nil {
+		log.Fatal("Failed to run migrations:", err)
+	}
+	log.Println("Database migrations completed successfully")
+
 	// Create Gin router
 	log.Println("Setting up Gin router...")
 	router := gin.Default()
@@ -50,6 +57,7 @@ func main() {
 	csvHandler := handlers.NewCSVHandler(db)
 	eventHandler := handlers.NewEventHandler(db)
 	exceedanceHandler := handlers.NewExceedanceHandler(db)
+	notificationHandler := handlers.NewNotificationHandler(db)
 
 	// Public routes
 	log.Println("Setting up routes...")
@@ -113,6 +121,12 @@ func main() {
 		protected.POST("/exceedances", exceedanceHandler.CreateExceedances)
 		protected.PUT("/exceedances/:id", exceedanceHandler.UpdateExceedance)
 		protected.DELETE("/exceedances/:id", exceedanceHandler.DeleteExceedance)
+
+		// Notification routes
+		protected.POST("/notifications", notificationHandler.CreateNotifications)
+		protected.GET("/notifications/user/:userId", notificationHandler.GetUserNotifications)
+		protected.PUT("/notifications/:id/read", notificationHandler.MarkNotificationAsRead)
+		protected.PUT("/notifications/user/:userId/mark-all-read", notificationHandler.MarkAllNotificationsAsRead)
 	}
 
 	// Start server
