@@ -170,13 +170,17 @@ func (h *UserHandler) GetUsers(c *gin.Context) {
 func (h *UserHandler) CreateUser(c *gin.Context) {
 	var req models.CreateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Printf("CreateUser: Error binding JSON: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
+	log.Printf("CreateUser: Creating user with email: %s", req.Email)
+
 	// Hash password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
+		log.Printf("CreateUser: Error hashing password: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error hashing password"})
 		return
 	}
@@ -191,9 +195,12 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 	
 	_, err = h.db.Exec(query, id, req.Email, req.Role, req.FullName, req.Username, string(hashedPassword), req.Company, now.UnixMilli(), now.UnixMilli())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error creating user"})
+		log.Printf("CreateUser: Database error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error creating user", "details": err.Error()})
 		return
 	}
+
+	log.Printf("CreateUser: User created successfully with ID: %s", id)
 
 	// Return created user (without password)
 	user := models.User{
@@ -207,18 +214,22 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 		UpdatedAt: now,
 	}
 
-	c.JSON(http.StatusOK, user)
+	c.JSON(http.StatusCreated, user)
 }
 
 // UpdateUser updates an existing user
 func (h *UserHandler) UpdateUser(c *gin.Context) {
 	id := c.Param("id")
+	log.Printf("UpdateUser: Received request for user ID: %s", id)
+	
 	var req models.UpdateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Printf("UpdateUser: Error binding JSON: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
+	log.Printf("UpdateUser: Update level: %s", req.UpdateLevel)
 	now := time.Now()
 
 	switch req.UpdateLevel {
