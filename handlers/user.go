@@ -269,8 +269,38 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 		return
 	}
 
-	// Return updated user
-	h.GetUserByID(c)
+	// Fetch and return updated user
+	query := `SELECT u.id, u.email, u.role, u.fullName, u.designation, u.department, u.gateId, u.username, u.password, u.image, u.company, u.phone, u.createdAt, u.updatedAt 
+			  FROM User u WHERE u.id = ?`
+	
+	var user models.User
+	var createdAtUnix, updatedAtUnix sql.NullInt64
+	row := h.db.QueryRow(query, id)
+	err := row.Scan(&user.ID, &user.Email, &user.Role, &user.FullName, &user.Designation,
+		&user.Department, &user.GateID, &user.Username, &user.Password, &user.Image,
+		&user.Company, &user.Phone, &createdAtUnix, &updatedAtUnix)
+	
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error fetching user"})
+		return
+	}
+
+	// Convert Unix timestamps to time.Time
+	if createdAtUnix.Valid {
+		user.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
+	}
+	if updatedAtUnix.Valid {
+		user.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
+	}
+
+	// Don't return password
+	user.Password = nil
+
+	c.JSON(http.StatusOK, user)
 }
 
 // GetUserByID retrieves a user by ID
