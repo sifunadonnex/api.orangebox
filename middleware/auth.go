@@ -3,7 +3,6 @@ package middleware
 import (
 	"fdm-backend/config"
 	"net/http"
-	"path/filepath"
 
 	"github.com/gin-gonic/gin"
 )
@@ -15,8 +14,7 @@ func AuthenticateToken() gin.HandlerFunc {
 		bearer := config.GetBearerToken()
 
 		if authHeader == "" {
-			// Serve HTML page from public directory
-			c.File(filepath.Join("public", "index.html"))
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header required"})
 			c.Abort()
 			return
 		}
@@ -24,8 +22,7 @@ func AuthenticateToken() gin.HandlerFunc {
 		if authHeader == bearer {
 			c.Next()
 		} else {
-			// Serve HTML page from public directory
-			c.File(filepath.Join("public", "index.html"))
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization token"})
 			c.Abort()
 			return
 		}
