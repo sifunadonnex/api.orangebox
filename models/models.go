@@ -76,6 +76,9 @@ type EventLog struct {
 	Low              *string   `json:"low" db:"low"`
 	Low1             *string   `json:"low1" db:"low1"`
 	Low2             *string   `json:"low2" db:"low2"`
+	TriggerType      *string   `json:"triggerType" db:"triggerType"`
+	DetectionPeriod  *string   `json:"detectionPeriod" db:"detectionPeriod"`
+	Severities       *string   `json:"severities" db:"severities"`
 	SOP              string    `json:"sop" db:"sop"`
 	AircraftID       string    `json:"aircraftId" db:"aircraftId"`
 	CreatedAt        time.Time `json:"createdAt" db:"createdAt"`
@@ -120,16 +123,16 @@ type CreateUserRequest struct {
 
 // UpdateUserRequest represents the update user request payload
 type UpdateUserRequest struct {
-	UpdateLevel  string  `json:"updateLevel" binding:"required"`
-	FullName     *string `json:"fullName,omitempty"`
-	Username     *string `json:"username,omitempty"`
-	Email        *string `json:"email,omitempty"`
-	Company      *string `json:"company,omitempty"`
-	Password     *string `json:"password,omitempty"`
-	Phone        *string `json:"phone,omitempty"`
-	Department   *string `json:"department,omitempty"`
-	Designation  *string `json:"designation,omitempty"`
-	Role         *string `json:"role,omitempty"`
+	UpdateLevel string  `json:"updateLevel" binding:"required"`
+	FullName    *string `json:"fullName,omitempty"`
+	Username    *string `json:"username,omitempty"`
+	Email       *string `json:"email,omitempty"`
+	Company     *string `json:"company,omitempty"`
+	Password    *string `json:"password,omitempty"`
+	Phone       *string `json:"phone,omitempty"`
+	Department  *string `json:"department,omitempty"`
+	Designation *string `json:"designation,omitempty"`
+	Role        *string `json:"role,omitempty"`
 }
 
 // CreateAircraftRequest represents the create aircraft request payload
@@ -176,6 +179,9 @@ type CreateEventRequest struct {
 	High1            *string `json:"high1,omitempty"`
 	Low2             *string `json:"low2,omitempty"`
 	High2            *string `json:"high2,omitempty"`
+	TriggerType      *string `json:"triggerType,omitempty"`
+	DetectionPeriod  *string `json:"detectionPeriod,omitempty"`
+	Severities       *string `json:"severities,omitempty"`
 	SOP              string  `json:"sop" binding:"required"`
 	AircraftID       string  `json:"aircraftId" binding:"required"`
 }
@@ -196,6 +202,9 @@ type UpdateEventRequest struct {
 	High1            *string `json:"high1,omitempty"`
 	Low2             *string `json:"low2,omitempty"`
 	High2            *string `json:"high2,omitempty"`
+	TriggerType      *string `json:"triggerType,omitempty"`
+	DetectionPeriod  *string `json:"detectionPeriod,omitempty"`
+	Severities       *string `json:"severities,omitempty"`
 	SOP              string  `json:"sop" binding:"required"`
 	AircraftID       string  `json:"aircraftId" binding:"required"`
 }

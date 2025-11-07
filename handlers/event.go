@@ -26,17 +26,35 @@ func (h *EventHandler) CreateEvent(c *gin.Context) {
 		return
 	}
 
+	// Debug logging
+	println("=== CreateEvent Debug ===")
+	if req.TriggerType != nil {
+		println("TriggerType received:", *req.TriggerType)
+	} else {
+		println("TriggerType is nil")
+	}
+	if req.DetectionPeriod != nil {
+		println("DetectionPeriod received:", *req.DetectionPeriod)
+	} else {
+		println("DetectionPeriod is nil")
+	}
+	if req.Severities != nil {
+		println("Severities received:", *req.Severities)
+	} else {
+		println("Severities is nil")
+	}
+
 	// Generate ID and timestamps
 	id := uuid.New().String()
 	now := time.Now()
 
 	// Insert event
-	query := `INSERT INTO EventLog (id, eventName, displayName, eventCode, eventDescription, eventParameter, eventTrigger, eventType, flightPhase, high, low, low1, high1, low2, high2, sop, aircraftId, createdAt, updatedAt) 
-			  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	
+	query := `INSERT INTO EventLog (id, eventName, displayName, eventCode, eventDescription, eventParameter, eventTrigger, eventType, flightPhase, high, low, low1, high1, low2, high2, triggerType, detectionPeriod, severities, sop, aircraftId, createdAt, updatedAt) 
+			  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
 	_, err := h.db.Exec(query, id, req.EventName, req.DisplayName, req.EventCode, req.EventDescription,
 		req.EventParameter, req.EventTrigger, req.EventType, req.FlightPhase, req.High, req.Low,
-		req.Low1, req.High1, req.Low2, req.High2, req.SOP, req.AircraftID, now.UnixMilli(), now.UnixMilli())
+		req.Low1, req.High1, req.Low2, req.High2, req.TriggerType, req.DetectionPeriod, req.Severities, req.SOP, req.AircraftID, now.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error creating event"})
 		return
@@ -59,6 +77,9 @@ func (h *EventHandler) CreateEvent(c *gin.Context) {
 		High1:            req.High1,
 		Low2:             req.Low2,
 		High2:            req.High2,
+		TriggerType:      req.TriggerType,
+		DetectionPeriod:  req.DetectionPeriod,
+		Severities:       req.Severities,
 		SOP:              req.SOP,
 		AircraftID:       req.AircraftID,
 		CreatedAt:        now,
@@ -70,11 +91,11 @@ func (h *EventHandler) CreateEvent(c *gin.Context) {
 
 // GetEvents retrieves all events with aircraft information
 func (h *EventHandler) GetEvents(c *gin.Context) {
-	query := `SELECT e.id, e.eventName, e.displayName, e.eventCode, e.eventDescription, e.eventParameter, e.eventTrigger, e.eventType, e.flightPhase, e.high, e.high1, e.high2, e.low, e.low1, e.low2, e.sop, e.aircraftId, e.createdAt, e.updatedAt,
+	query := `SELECT e.id, e.eventName, e.displayName, e.eventCode, e.eventDescription, e.eventParameter, e.eventTrigger, e.eventType, e.flightPhase, e.high, e.high1, e.high2, e.low, e.low1, e.low2, e.triggerType, e.detectionPeriod, e.severities, e.sop, e.aircraftId, e.createdAt, e.updatedAt,
 			  a.id as aircraft_id, a.airline, a.aircraftMake, a.modelNumber, a.serialNumber, a.userId, a.parameters, a.createdAt as aircraft_createdAt, a.updatedAt as aircraft_updatedAt
 			  FROM EventLog e 
 			  LEFT JOIN Aircraft a ON e.aircraftId = a.id`
-	
+
 	rows, err := h.db.Query(query)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
@@ -91,10 +112,10 @@ func (h *EventHandler) GetEvents(c *gin.Context) {
 		err := rows.Scan(&event.ID, &event.EventName, &event.DisplayName, &event.EventCode,
 			&event.EventDescription, &event.EventParameter, &event.EventTrigger, &event.EventType,
 			&event.FlightPhase, &event.High, &event.High1, &event.High2, &event.Low,
-			&event.Low1, &event.Low2, &event.SOP, &event.AircraftID, &eventCreatedAtUnix, &eventUpdatedAtUnix,
+			&event.Low1, &event.Low2, &event.TriggerType, &event.DetectionPeriod, &event.Severities, &event.SOP, &event.AircraftID, &eventCreatedAtUnix, &eventUpdatedAtUnix,
 			&aircraft.ID, &aircraft.Airline, &aircraft.AircraftMake, &aircraft.ModelNumber,
 			&aircraft.SerialNumber, &aircraft.UserID, &aircraft.Parameters, &aircraftCreatedAtUnix, &aircraftUpdatedAtUnix)
-		
+
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning event"})
 			return
@@ -107,7 +128,7 @@ func (h *EventHandler) GetEvents(c *gin.Context) {
 		if eventUpdatedAtUnix.Valid {
 			event.UpdatedAt = time.Unix(eventUpdatedAtUnix.Int64/1000, 0)
 		}
-		
+
 		// Handle nullable timestamps for aircraft
 		if aircraftCreatedAtUnix.Valid {
 			aircraft.CreatedAt = time.Unix(aircraftCreatedAtUnix.Int64/1000, 0)
@@ -133,17 +154,17 @@ func (h *EventHandler) GetEvents(c *gin.Context) {
 // GetEventByID retrieves an event by ID
 func (h *EventHandler) GetEventByID(c *gin.Context) {
 	id := c.Param("id")
-	
-	query := `SELECT id, eventName, displayName, eventCode, eventDescription, eventParameter, eventTrigger, eventType, flightPhase, high, high1, high2, low, low1, low2, sop, aircraftId, createdAt, updatedAt FROM EventLog WHERE id = ?`
-	
+
+	query := `SELECT id, eventName, displayName, eventCode, eventDescription, eventParameter, eventTrigger, eventType, flightPhase, high, high1, high2, low, low1, low2, triggerType, detectionPeriod, severities, sop, aircraftId, createdAt, updatedAt FROM EventLog WHERE id = ?`
+
 	var event models.EventLog
 	var createdAtUnix, updatedAtUnix sql.NullInt64
 	row := h.db.QueryRow(query, id)
 	err := row.Scan(&event.ID, &event.EventName, &event.DisplayName, &event.EventCode,
 		&event.EventDescription, &event.EventParameter, &event.EventTrigger, &event.EventType,
 		&event.FlightPhase, &event.High, &event.High1, &event.High2, &event.Low,
-		&event.Low1, &event.Low2, &event.SOP, &event.AircraftID, &createdAtUnix, &updatedAtUnix)
-	
+		&event.Low1, &event.Low2, &event.TriggerType, &event.DetectionPeriod, &event.Severities, &event.SOP, &event.AircraftID, &createdAtUnix, &updatedAtUnix)
+
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Event not found"})
 		return
@@ -174,11 +195,11 @@ func (h *EventHandler) UpdateEvent(c *gin.Context) {
 
 	now := time.Now()
 
-	query := `UPDATE EventLog SET eventName = ?, displayName = ?, eventCode = ?, eventDescription = ?, eventParameter = ?, eventTrigger = ?, eventType = ?, flightPhase = ?, high = ?, low = ?, low1 = ?, high1 = ?, low2 = ?, high2 = ?, sop = ?, aircraftId = ?, updatedAt = ? WHERE id = ?`
-	
+	query := `UPDATE EventLog SET eventName = ?, displayName = ?, eventCode = ?, eventDescription = ?, eventParameter = ?, eventTrigger = ?, eventType = ?, flightPhase = ?, high = ?, low = ?, low1 = ?, high1 = ?, low2 = ?, high2 = ?, triggerType = ?, detectionPeriod = ?, severities = ?, sop = ?, aircraftId = ?, updatedAt = ? WHERE id = ?`
+
 	result, err := h.db.Exec(query, req.EventName, req.DisplayName, req.EventCode, req.EventDescription,
 		req.EventParameter, req.EventTrigger, req.EventType, req.FlightPhase, req.High, req.Low,
-		req.Low1, req.High1, req.Low2, req.High2, req.SOP, req.AircraftID, now.UnixMilli(), id)
+		req.Low1, req.High1, req.Low2, req.High2, req.TriggerType, req.DetectionPeriod, req.Severities, req.SOP, req.AircraftID, now.UnixMilli(), id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating event"})
 		return
@@ -207,6 +228,9 @@ func (h *EventHandler) UpdateEvent(c *gin.Context) {
 		High1:            req.High1,
 		Low2:             req.Low2,
 		High2:            req.High2,
+		TriggerType:      req.TriggerType,
+		DetectionPeriod:  req.DetectionPeriod,
+		Severities:       req.Severities,
 		SOP:              req.SOP,
 		AircraftID:       req.AircraftID,
 		UpdatedAt:        now,
@@ -218,7 +242,7 @@ func (h *EventHandler) UpdateEvent(c *gin.Context) {
 // DeleteEvent deletes an event
 func (h *EventHandler) DeleteEvent(c *gin.Context) {
 	id := c.Param("id")
-	
+
 	query := `DELETE FROM EventLog WHERE id = ?`
 	result, err := h.db.Exec(query, id)
 	if err != nil {

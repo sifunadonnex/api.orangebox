@@ -1,0 +1,4 @@
+-- Add new fields for event trigger and severity configuration
+-- This migration has already been executed successfully
+-- The columns triggerType, detectionPeriod, and severities have been added to EventLog table
+-- No further changes needed

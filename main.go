@@ -34,7 +34,7 @@ func main() {
 
 	// CORS configuration
 	corsConfig := cors.Config{
-		AllowOrigins:     []string{"http://localhost:3000"},
+		AllowOrigins:     []string{"http://localhost:3000", "https://www.orangebox.co.ke", "http://www.orangebox.co.ke"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
 		AllowCredentials: true,
@@ -128,6 +128,12 @@ func main() {
 		protected.PUT("/notifications/:id/read", notificationHandler.MarkNotificationAsRead)
 		protected.PUT("/notifications/user/:userId/mark-all-read", notificationHandler.MarkAllNotificationsAsRead)
 	}
+
+	// Catch-all for unmatched routes (for debugging)
+	router.NoRoute(func(c *gin.Context) {
+		log.Printf("NoRoute: Method=%s Path=%s", c.Request.Method, c.Request.URL.Path)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Route not found", "path": c.Request.URL.Path, "method": c.Request.Method})
+	})
 
 	// Start server
 	port := config.GetPort()
