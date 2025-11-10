@@ -80,7 +80,7 @@ Flight Data Monitoring (FDM) Backend API built with Go, Gin web framework, and S
    go run main.go
    ```
 
-5. **The server will start on:** `http://localhost:8000`
+5. **The server will start on:** `https://api-orangebox.onrender.com`
 
 ## Environment Variables
 

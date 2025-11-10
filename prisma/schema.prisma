@@ -85,8 +85,11 @@ model EventLog {
   high1           String?
   high2           String?
   low             String?
-  low1          String?
-  low2          String?
+  low1            String?
+  low2            String?
+  triggerType     String?
+  detectionPeriod String?
+  severities      String?
   sop             String
   aircraftId      String
   exceedance     Exceedance[]

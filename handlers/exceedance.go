@@ -21,7 +21,7 @@ func NewExceedanceHandler(db *sql.DB) *ExceedanceHandler {
 // GetExceedances retrieves all exceedances with related data
 func (h *ExceedanceHandler) GetExceedances(c *gin.Context) {
 	query := `SELECT e.id, e.exceedanceValues, e.flightPhase, e.parameterName, e.description, e.eventStatus, e.aircraftId, e.flightId, e.file, e.eventId, e.comment, e.exceedanceLevel, e.createdAt, e.updatedAt,
-			  el.id as eventlog_id, el.eventName, el.displayName, el.eventCode, el.eventDescription, el.eventParameter, el.eventTrigger, el.eventType, el.flightPhase as eventlog_flightPhase, el.high, el.high1, el.high2, el.low, el.low1, el.low2, el.sop, el.aircraftId as eventlog_aircraftId, el.createdAt as eventlog_createdAt, el.updatedAt as eventlog_updatedAt,
+			  el.id as eventlog_id, el.eventName, el.displayName, el.eventCode, el.eventDescription, el.eventParameter, el.eventTrigger, el.eventType, el.flightPhase as eventlog_flightPhase, el.high, el.high1, el.high2, el.low, el.low1, el.low2, el.triggerType, el.detectionPeriod, el.severities, el.sop, el.aircraftId as eventlog_aircraftId, el.createdAt as eventlog_createdAt, el.updatedAt as eventlog_updatedAt,
 			  c.id as csv_id, c.name, c.file as csv_file, c.status, c.departure, c.pilot, c.destination, c.flightHours, c.aircraftId as csv_aircraftId, c.createdAt as csv_createdAt, c.updatedAt as csv_updatedAt,
 			  a.id as aircraft_id, a.airline, a.aircraftMake, a.modelNumber, a.serialNumber, a.userId, a.parameters, a.createdAt as aircraft_createdAt, a.updatedAt as aircraft_updatedAt
 			  FROM Exceedance e 
@@ -59,7 +59,7 @@ func (h *ExceedanceHandler) GetExceedances(c *gin.Context) {
 			&eventLogID, &eventLog.EventName, &eventLog.DisplayName, &eventLog.EventCode,
 			&eventLog.EventDescription, &eventLog.EventParameter, &eventLog.EventTrigger, &eventLog.EventType,
 			&eventLog.FlightPhase, &eventLog.High, &eventLog.High1, &eventLog.High2, &eventLog.Low,
-			&eventLog.Low1, &eventLog.Low2, &eventLog.SOP, &eventLog.AircraftID, &eventLogCreatedAtUnix, &eventLogUpdatedAtUnix,
+			&eventLog.Low1, &eventLog.Low2, &eventLog.TriggerType, &eventLog.DetectionPeriod, &eventLog.Severities, &eventLog.SOP, &eventLog.AircraftID, &eventLogCreatedAtUnix, &eventLogUpdatedAtUnix,
 			&csvID, &csv.Name, &csv.File, &csv.Status, &csv.Departure, &csv.Pilot,
 			&csv.Destination, &csv.FlightHours, &csv.AircraftID, &csvCreatedAtUnix, &csvUpdatedAtUnix,
 			&aircraftID, &aircraft.Airline, &aircraft.AircraftMake, &aircraft.ModelNumber,
@@ -136,7 +136,7 @@ func (h *ExceedanceHandler) GetExceedanceByID(c *gin.Context) {
 	id := c.Param("id")
 	
 	query := `SELECT e.id, e.exceedanceValues, e.flightPhase, e.parameterName, e.description, e.eventStatus, e.aircraftId, e.flightId, e.file, e.eventId, e.comment, e.exceedanceLevel, e.createdAt, e.updatedAt,
-			  el.id as eventlog_id, el.eventName, el.displayName, el.eventCode, el.eventDescription, el.eventParameter, el.eventTrigger, el.eventType, el.flightPhase as eventlog_flightPhase, el.high, el.high1, el.high2, el.low, el.low1, el.low2, el.sop, el.aircraftId as eventlog_aircraftId, el.createdAt as eventlog_createdAt, el.updatedAt as eventlog_updatedAt,
+			  el.id as eventlog_id, el.eventName, el.displayName, el.eventCode, el.eventDescription, el.eventParameter, el.eventTrigger, el.eventType, el.flightPhase as eventlog_flightPhase, el.high, el.high1, el.high2, el.low, el.low1, el.low2, el.triggerType, el.detectionPeriod, el.severities, el.sop, el.aircraftId as eventlog_aircraftId, el.createdAt as eventlog_createdAt, el.updatedAt as eventlog_updatedAt,
 			  c.id as csv_id, c.name, c.file as csv_file, c.status, c.departure, c.pilot, c.destination, c.flightHours, c.aircraftId as csv_aircraftId, c.createdAt as csv_createdAt, c.updatedAt as csv_updatedAt,
 			  a.id as aircraft_id, a.airline, a.aircraftMake, a.modelNumber, a.serialNumber, a.userId, a.parameters, a.createdAt as aircraft_createdAt, a.updatedAt as aircraft_updatedAt
 			  FROM Exceedance e 
@@ -167,7 +167,7 @@ func (h *ExceedanceHandler) GetExceedanceByID(c *gin.Context) {
 		&eventLogID, &eventLog.EventName, &eventLog.DisplayName, &eventLog.EventCode,
 		&eventLog.EventDescription, &eventLog.EventParameter, &eventLog.EventTrigger, &eventLog.EventType,
 		&eventLog.FlightPhase, &eventLog.High, &eventLog.High1, &eventLog.High2, &eventLog.Low,
-		&eventLog.Low1, &eventLog.Low2, &eventLog.SOP, &eventLog.AircraftID, &eventLogCreatedAtUnix, &eventLogUpdatedAtUnix,
+		&eventLog.Low1, &eventLog.Low2, &eventLog.TriggerType, &eventLog.DetectionPeriod, &eventLog.Severities, &eventLog.SOP, &eventLog.AircraftID, &eventLogCreatedAtUnix, &eventLogUpdatedAtUnix,
 		&csvID, &csv.Name, &csv.File, &csv.Status, &csv.Departure, &csv.Pilot,
 		&csv.Destination, &csv.FlightHours, &csv.AircraftID, &csvCreatedAtUnix, &csvUpdatedAtUnix,
 		&aircraftID, &aircraft.Airline, &aircraft.AircraftMake, &aircraft.ModelNumber,

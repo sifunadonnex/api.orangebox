@@ -33,7 +33,7 @@ func (h *AircraftHandler) GetAircrafts(c *gin.Context) {
 		var aircraft models.Aircraft
 		var modelNumber, parameters sql.NullString
 		var createdAtUnix, updatedAtUnix sql.NullInt64
-		
+
 		err := rows.Scan(&aircraft.ID, &aircraft.Airline, &aircraft.AircraftMake, &modelNumber,
 			&aircraft.SerialNumber, &aircraft.UserID, &parameters, &createdAtUnix, &updatedAtUnix)
 		if err != nil {
@@ -57,10 +57,10 @@ func (h *AircraftHandler) GetAircrafts(c *gin.Context) {
 
 		// Get related CSV files
 		csvs, _ := h.getAircraftCSVs(aircraft.ID)
-		
+
 		// Get related event logs
 		eventLogs, _ := h.getAircraftEventLogs(aircraft.ID)
-		
+
 		// Get related exceedances
 		exceedances, _ := h.getAircraftExceedances(aircraft.ID)
 
@@ -85,7 +85,7 @@ func (h *AircraftHandler) GetAircrafts(c *gin.Context) {
 // GetAircraftsByUserID retrieves aircraft by user ID
 func (h *AircraftHandler) GetAircraftsByUserID(c *gin.Context) {
 	userID := c.Param("id")
-	
+
 	query := `SELECT id, airline, aircraftMake, modelNumber, serialNumber, userId, parameters, createdAt, updatedAt FROM Aircraft WHERE userId = ?`
 	rows, err := h.db.Query(query, userID)
 	if err != nil {
@@ -99,7 +99,7 @@ func (h *AircraftHandler) GetAircraftsByUserID(c *gin.Context) {
 		var aircraft models.Aircraft
 		var modelNumber, parameters sql.NullString
 		var createdAtUnix, updatedAtUnix sql.NullInt64
-		
+
 		err := rows.Scan(&aircraft.ID, &aircraft.Airline, &aircraft.AircraftMake, &modelNumber,
 			&aircraft.SerialNumber, &aircraft.UserID, &parameters, &createdAtUnix, &updatedAtUnix)
 		if err != nil {
@@ -127,10 +127,10 @@ func (h *AircraftHandler) GetAircraftsByUserID(c *gin.Context) {
 
 		// Get related CSV files
 		csvs, _ := h.getAircraftCSVs(aircraft.ID)
-		
+
 		// Get related event logs
 		eventLogs, _ := h.getAircraftEventLogs(aircraft.ID)
-		
+
 		// Get related exceedances
 		exceedances, _ := h.getAircraftExceedances(aircraft.ID)
 
@@ -167,7 +167,7 @@ func (h *AircraftHandler) CreateAircraft(c *gin.Context) {
 	// Insert aircraft
 	query := `INSERT INTO Aircraft (id, airline, aircraftMake, serialNumber, userId, parameters, createdAt, updatedAt) 
 			  VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-	
+
 	_, err := h.db.Exec(query, id, req.Airline, req.AircraftMake, req.SerialNumber, req.User, req.Parameters, now.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error creating aircraft"})
@@ -230,7 +230,7 @@ func (h *AircraftHandler) UpdateAircraft(c *gin.Context) {
 // DeleteAircraft deletes an aircraft
 func (h *AircraftHandler) DeleteAircraft(c *gin.Context) {
 	id := c.Param("id")
-	
+
 	query := `DELETE FROM Aircraft WHERE id = ?`
 	result, err := h.db.Exec(query, id)
 	if err != nil {
@@ -261,20 +261,20 @@ func (h *AircraftHandler) getAircraftCSVs(aircraftID string) ([]models.CSV, erro
 	for rows.Next() {
 		var csv models.CSV
 		var createdAtUnix, updatedAtUnix sql.NullInt64
-		
+
 		err := rows.Scan(&csv.ID, &csv.Name, &csv.File, &csv.Status, &csv.Departure, &csv.Pilot,
 			&csv.Destination, &csv.FlightHours, &csv.AircraftID, &createdAtUnix, &updatedAtUnix)
 		if err != nil {
 			continue
 		}
-		
+
 		if createdAtUnix.Valid {
 			csv.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
 		}
 		if updatedAtUnix.Valid {
 			csv.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
 		}
-		
+
 		csvs = append(csvs, csv)
 	}
 
@@ -282,7 +282,7 @@ func (h *AircraftHandler) getAircraftCSVs(aircraftID string) ([]models.CSV, erro
 }
 
 func (h *AircraftHandler) getAircraftEventLogs(aircraftID string) ([]models.EventLog, error) {
-	query := `SELECT id, eventName, displayName, eventCode, eventDescription, eventParameter, eventTrigger, eventType, flightPhase, high, high1, high2, low, low1, low2, sop, aircraftId, createdAt, updatedAt FROM EventLog WHERE aircraftId = ?`
+	query := `SELECT id, eventName, displayName, eventCode, eventDescription, eventParameter, eventTrigger, eventType, flightPhase, high, high1, high2, low, low1, low2, triggerType, detectionPeriod, severities, sop, aircraftId, createdAt, updatedAt FROM EventLog WHERE aircraftId = ?`
 	rows, err := h.db.Query(query, aircraftID)
 	if err != nil {
 		return nil, err
@@ -293,22 +293,22 @@ func (h *AircraftHandler) getAircraftEventLogs(aircraftID string) ([]models.Even
 	for rows.Next() {
 		var eventLog models.EventLog
 		var createdAtUnix, updatedAtUnix sql.NullInt64
-		
+
 		err := rows.Scan(&eventLog.ID, &eventLog.EventName, &eventLog.DisplayName, &eventLog.EventCode,
 			&eventLog.EventDescription, &eventLog.EventParameter, &eventLog.EventTrigger, &eventLog.EventType,
 			&eventLog.FlightPhase, &eventLog.High, &eventLog.High1, &eventLog.High2, &eventLog.Low,
-			&eventLog.Low1, &eventLog.Low2, &eventLog.SOP, &eventLog.AircraftID, &createdAtUnix, &updatedAtUnix)
+			&eventLog.Low1, &eventLog.Low2, &eventLog.TriggerType, &eventLog.DetectionPeriod, &eventLog.Severities, &eventLog.SOP, &eventLog.AircraftID, &createdAtUnix, &updatedAtUnix)
 		if err != nil {
 			continue
 		}
-		
+
 		if createdAtUnix.Valid {
 			eventLog.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
 		}
 		if updatedAtUnix.Valid {
 			eventLog.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
 		}
-		
+
 		eventLogs = append(eventLogs, eventLog)
 	}
 
@@ -327,7 +327,7 @@ func (h *AircraftHandler) getAircraftExceedances(aircraftID string) ([]models.Ex
 	for rows.Next() {
 		var exceedance models.Exceedance
 		var createdAtUnix, updatedAtUnix sql.NullInt64
-		
+
 		err := rows.Scan(&exceedance.ID, &exceedance.ExceedanceValues, &exceedance.FlightPhase,
 			&exceedance.ParameterName, &exceedance.Description, &exceedance.EventStatus,
 			&exceedance.AircraftID, &exceedance.FlightID, &exceedance.File, &exceedance.EventID,
@@ -335,14 +335,14 @@ func (h *AircraftHandler) getAircraftExceedances(aircraftID string) ([]models.Ex
 		if err != nil {
 			continue
 		}
-		
+
 		if createdAtUnix.Valid {
 			exceedance.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
 		}
 		if updatedAtUnix.Valid {
 			exceedance.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
 		}
-		
+
 		exceedances = append(exceedances, exceedance)
 	}
 
