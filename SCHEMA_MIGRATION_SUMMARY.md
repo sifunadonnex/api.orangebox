@@ -141,11 +141,7 @@ The migration was successfully executed:
 2025/11/06 14:32:10 Successfully executed migration: database\migrations\002_update_eventlog_schema.sql
 ```
 
-<<<<<<< HEAD
 Server is running on: https://api-orangebox.onrender.com
-=======
-Server is running on: http://localhost:8000
->>>>>>> f6ca660653316c3bef06d307e2aac058e5034247
 
 ## Testing Recommendations
 

@@ -6,21 +6,31 @@ import (
 
 // User represents a user in the system
 type User struct {
-	ID          string    `json:"id" db:"id"`
-	Email       string    `json:"email" db:"email"`
-	Role        *string   `json:"role" db:"role"`
-	FullName    *string   `json:"fullName" db:"fullName"`
-	Designation *string   `json:"designation" db:"designation"`
-	Department  *string   `json:"department" db:"department"`
-	GateID      *string   `json:"gateId" db:"gateId"`
-	Username    *string   `json:"username" db:"username"`
-	Password    *string   `json:"password" db:"password"`
-	Image       *string   `json:"image" db:"image"`
-	Company     *string   `json:"company" db:"company"`
-	Phone       *string   `json:"phone" db:"phone"`
-	CreatedAt   time.Time `json:"createdAt" db:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt" db:"updatedAt"`
+	ID          string     `json:"id" db:"id"`
+	Email       string     `json:"email" db:"email"`
+	Role        string     `json:"role" db:"role"` // admin, fda, gatekeeper, user
+	FullName    *string    `json:"fullName" db:"fullName"`
+	Designation *string    `json:"designation" db:"designation"`
+	Department  *string    `json:"department" db:"department"`
+	Username    *string    `json:"username" db:"username"`
+	Password    *string    `json:"password" db:"password"`
+	Image       *string    `json:"image" db:"image"`
+	Phone       *string    `json:"phone" db:"phone"`
+	IsActive    bool       `json:"isActive" db:"isActive"`
+	CompanyID   *string    `json:"companyId" db:"companyId"`
+	LastLoginAt *time.Time `json:"lastLoginAt" db:"lastLoginAt"`
+	CreatedAt   time.Time  `json:"createdAt" db:"createdAt"`
+	UpdatedAt   time.Time  `json:"updatedAt" db:"updatedAt"`
+	Company     *Company   `json:"company,omitempty"`
 }
+
+// UserRole constants
+const (
+	RoleAdmin      = "admin"      // IT team, accountable manager - full privileges
+	RoleFDA        = "fda"        // Flight Data Analyst - validate events, analyze flights
+	RoleGatekeeper = "gatekeeper" // Client gatekeeper - add events, view data
+	RoleUser       = "user"       // Client user - view only
+)
 
 // Aircraft represents an aircraft in the system
 type Aircraft struct {
@@ -29,10 +39,12 @@ type Aircraft struct {
 	AircraftMake string    `json:"aircraftMake" db:"aircraftMake"`
 	ModelNumber  *string   `json:"modelNumber" db:"modelNumber"`
 	SerialNumber string    `json:"serialNumber" db:"serialNumber"`
-	UserID       string    `json:"userId" db:"userId"`
+	Registration *string   `json:"registration" db:"registration"`
+	CompanyID    string    `json:"companyId" db:"companyId"`
 	Parameters   *string   `json:"parameters" db:"parameters"`
 	CreatedAt    time.Time `json:"createdAt" db:"createdAt"`
 	UpdatedAt    time.Time `json:"updatedAt" db:"updatedAt"`
+	Company      *Company  `json:"company,omitempty"`
 }
 
 // CSV represents a CSV file in the system
@@ -113,26 +125,29 @@ type LoginRequest struct {
 
 // CreateUserRequest represents the create user request payload
 type CreateUserRequest struct {
-	FullName string `json:"fullName" binding:"required"`
-	Role     string `json:"role" binding:"required"`
-	Username string `json:"username" binding:"required"`
-	Email    string `json:"email" binding:"required,email"`
-	Company  string `json:"company" binding:"required"`
-	Password string `json:"password" binding:"required"`
+	FullName    string  `json:"fullName" binding:"required"`
+	Role        string  `json:"role" binding:"required"` // admin, fda, gatekeeper, user
+	Username    string  `json:"username" binding:"required"`
+	Email       string  `json:"email" binding:"required,email"`
+	CompanyID   *string `json:"companyId"`
+	Password    string  `json:"password" binding:"required"`
+	Phone       *string `json:"phone"`
+	Designation *string `json:"designation"`
+	Department  *string `json:"department"`
 }
 
 // UpdateUserRequest represents the update user request payload
 type UpdateUserRequest struct {
-	UpdateLevel string  `json:"updateLevel" binding:"required"`
 	FullName    *string `json:"fullName,omitempty"`
 	Username    *string `json:"username,omitempty"`
 	Email       *string `json:"email,omitempty"`
-	Company     *string `json:"company,omitempty"`
+	CompanyID   *string `json:"companyId,omitempty"`
 	Password    *string `json:"password,omitempty"`
 	Phone       *string `json:"phone,omitempty"`
 	Department  *string `json:"department,omitempty"`
 	Designation *string `json:"designation,omitempty"`
 	Role        *string `json:"role,omitempty"`
+	IsActive    *bool   `json:"isActive,omitempty"`
 }
 
 // CreateAircraftRequest represents the create aircraft request payload
@@ -140,7 +155,7 @@ type CreateAircraftRequest struct {
 	Airline      string  `json:"airline" binding:"required"`
 	AircraftMake string  `json:"aircraftMake" binding:"required"`
 	SerialNumber string  `json:"serialNumber" binding:"required"`
-	User         string  `json:"user" binding:"required"`
+	CompanyID    string  `json:"companyId" binding:"required"`
 	Parameters   *string `json:"parameters,omitempty"`
 }
 
@@ -149,7 +164,7 @@ type UpdateAircraftRequest struct {
 	Airline      string  `json:"airline" binding:"required"`
 	AircraftMake string  `json:"aircraftMake" binding:"required"`
 	SerialNumber string  `json:"serialNumber" binding:"required"`
-	User         string  `json:"user" binding:"required"`
+	CompanyID    string  `json:"companyId" binding:"required"`
 	Parameters   *string `json:"parameters,omitempty"`
 }
 

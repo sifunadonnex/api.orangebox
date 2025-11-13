@@ -10,23 +10,63 @@ datasource db {
   url      = "file:./dev.db"
 }
 
+model Company {
+  id                String      @id @default(cuid())
+  name              String      @unique
+  email             String      @unique
+  phone             String?
+  address           String?
+  country           String?
+  logo              String?
+  status            String      @default("active") // active, suspended, expired
+  subscriptionId    String?
+  subscription      Subscription? @relation(fields: [subscriptionId], references: [id])
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  users             User[]
+  aircraft          Aircraft[]
+}
+
+model Subscription {
+  id                    String      @id @default(cuid())
+  planName              String      // Basic, Standard, Premium, Enterprise
+  planType              String      // monthly, yearly
+  maxUsers              Int         @default(5)
+  maxAircraft           Int         @default(2)
+  maxFlightsPerMonth    Int         @default(100)
+  maxStorageGB          Int         @default(10)
+  price                 Float
+  currency              String      @default("USD")
+  startDate             DateTime
+  endDate               DateTime
+  isActive              Boolean     @default(true)
+  autoRenew             Boolean     @default(false)
+  lastPaymentDate       DateTime?
+  nextPaymentDate       DateTime?
+  alertSentAt           DateTime?   // Track when suspension alert was sent
+  createdAt             DateTime    @default(now())
+  updatedAt             DateTime    @updatedAt
+  companies             Company[]
+}
+
 model User {
-  id        String        @id @default(cuid())
-  email     String     @unique
-  role      String?    @default("client")
-  fullName  String?
-  designation String?
-  department String?
-  gateId    String?
-  username  String?
-  password  String?
-  image     String?
-  company   String?
-  phone    String?
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
-  Aircraft  Aircraft[]
-  notifications Notification[]
+  id              String        @id @default(cuid())
+  email           String        @unique
+  role            String        @default("user") // admin, fda, gatekeeper, user
+  fullName        String?
+  designation     String?
+  department      String?
+  username        String?
+  password        String?
+  image           String?
+  phone           String?
+  isActive        Boolean       @default(true)
+  companyId       String?
+  company         Company?      @relation(fields: [companyId], references: [id])
+  lastLoginAt     DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  notifications   Notification[]
 }
 
 model Csv {
@@ -51,9 +91,10 @@ model Aircraft {
   aircraftMake String
   modelNumber  String?
   serialNumber String
-  userId       String
+  registration String?
+  companyId    String
   parameters   String?
-  user         User         @relation(fields: [userId], references: [id])
+  company      Company      @relation(fields: [companyId], references: [id])
   csv          Csv[]
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt

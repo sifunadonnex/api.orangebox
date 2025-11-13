@@ -92,9 +92,11 @@ func (h *EventHandler) CreateEvent(c *gin.Context) {
 // GetEvents retrieves all events with aircraft information
 func (h *EventHandler) GetEvents(c *gin.Context) {
 	query := `SELECT e.id, e.eventName, e.displayName, e.eventCode, e.eventDescription, e.eventParameter, e.eventTrigger, e.eventType, e.flightPhase, e.high, e.high1, e.high2, e.low, e.low1, e.low2, e.triggerType, e.detectionPeriod, e.severities, e.sop, e.aircraftId, e.createdAt, e.updatedAt,
-			  a.id as aircraft_id, a.airline, a.aircraftMake, a.modelNumber, a.serialNumber, a.userId, a.parameters, a.createdAt as aircraft_createdAt, a.updatedAt as aircraft_updatedAt
+			  a.id as aircraft_id, a.airline, a.aircraftMake, a.modelNumber, a.serialNumber, a.companyId, a.parameters, a.createdAt as aircraft_createdAt, a.updatedAt as aircraft_updatedAt,
+			  c.id as company_id, c.name as company_name, c.email as company_email, c.phone as company_phone, c.address as company_address, c.country as company_country, c.logo as company_logo, c.status as company_status, c.subscriptionId as company_subscriptionId, c.createdAt as company_createdAt, c.updatedAt as company_updatedAt
 			  FROM EventLog e 
-			  LEFT JOIN Aircraft a ON e.aircraftId = a.id`
+			  LEFT JOIN Aircraft a ON e.aircraftId = a.id
+			  LEFT JOIN Company c ON a.companyId = c.id`
 
 	rows, err := h.db.Query(query)
 	if err != nil {
@@ -107,14 +109,16 @@ func (h *EventHandler) GetEvents(c *gin.Context) {
 	for rows.Next() {
 		var event models.EventLog
 		var aircraft models.Aircraft
-		var eventCreatedAtUnix, eventUpdatedAtUnix, aircraftCreatedAtUnix, aircraftUpdatedAtUnix sql.NullInt64
+		var company models.Company
+		var eventCreatedAtUnix, eventUpdatedAtUnix, aircraftCreatedAtUnix, aircraftUpdatedAtUnix, companyCreatedAtUnix, companyUpdatedAtUnix sql.NullInt64
 
 		err := rows.Scan(&event.ID, &event.EventName, &event.DisplayName, &event.EventCode,
 			&event.EventDescription, &event.EventParameter, &event.EventTrigger, &event.EventType,
 			&event.FlightPhase, &event.High, &event.High1, &event.High2, &event.Low,
 			&event.Low1, &event.Low2, &event.TriggerType, &event.DetectionPeriod, &event.Severities, &event.SOP, &event.AircraftID, &eventCreatedAtUnix, &eventUpdatedAtUnix,
 			&aircraft.ID, &aircraft.Airline, &aircraft.AircraftMake, &aircraft.ModelNumber,
-			&aircraft.SerialNumber, &aircraft.UserID, &aircraft.Parameters, &aircraftCreatedAtUnix, &aircraftUpdatedAtUnix)
+			&aircraft.SerialNumber, &aircraft.CompanyID, &aircraft.Parameters, &aircraftCreatedAtUnix, &aircraftUpdatedAtUnix,
+			&company.ID, &company.Name, &company.Email, &company.Phone, &company.Address, &company.Country, &company.Logo, &company.Status, &company.SubscriptionID, &companyCreatedAtUnix, &companyUpdatedAtUnix)
 
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning event"})
@@ -137,12 +141,23 @@ func (h *EventHandler) GetEvents(c *gin.Context) {
 			aircraft.UpdatedAt = time.Unix(aircraftUpdatedAtUnix.Int64/1000, 0)
 		}
 
+		// Handle nullable timestamps for company
+		if companyCreatedAtUnix.Valid {
+			company.CreatedAt = time.Unix(companyCreatedAtUnix.Int64/1000, 0)
+		}
+		if companyUpdatedAtUnix.Valid {
+			company.UpdatedAt = time.Unix(companyUpdatedAtUnix.Int64/1000, 0)
+		}
+
+		// Attach company to aircraft
+		aircraft.Company = &company
+
 		eventWithAircraft := struct {
 			models.EventLog
-			Aircraft models.Aircraft `json:"aircraft"`
+			Aircraft *models.Aircraft `json:"aircraft"`
 		}{
 			EventLog: event,
-			Aircraft: aircraft,
+			Aircraft: &aircraft,
 		}
 
 		events = append(events, eventWithAircraft)

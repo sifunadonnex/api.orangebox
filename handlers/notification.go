@@ -67,7 +67,7 @@ func (h *NotificationHandler) CreateNotifications(c *gin.Context) {
 
 			query := `INSERT INTO Notification (id, userId, exceedanceId, message, level, isRead, createdAt, updatedAt)
 					 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-			
+
 			_, err := h.db.Exec(query, notification.ID, notification.UserID,
 				notification.ExceedanceID, notification.Message, notification.Level,
 				notification.IsRead, notification.CreatedAt.UnixMilli(),
@@ -87,7 +87,7 @@ func (h *NotificationHandler) CreateNotifications(c *gin.Context) {
 // GetUserNotifications retrieves notifications for a specific user
 func (h *NotificationHandler) GetUserNotifications(c *gin.Context) {
 	userID := c.Param("userId")
-	
+
 	query := `SELECT n.id, n.userId, n.exceedanceId, n.message, n.level, n.isRead, n.createdAt, n.updatedAt
 			  FROM Notification n
 			  WHERE n.userId = ?
@@ -103,19 +103,23 @@ func (h *NotificationHandler) GetUserNotifications(c *gin.Context) {
 	var notifications []models.Notification
 	for rows.Next() {
 		var notification models.Notification
-		var createdAtUnix, updatedAtUnix int64
+		var createdAt, updatedAt sql.NullTime
 
 		err := rows.Scan(&notification.ID, &notification.UserID,
 			&notification.ExceedanceID, &notification.Message,
 			&notification.Level, &notification.IsRead,
-			&createdAtUnix, &updatedAtUnix)
+			&createdAt, &updatedAt)
 
 		if err != nil {
 			continue
 		}
 
-		notification.CreatedAt = time.Unix(createdAtUnix/1000, 0)
-		notification.UpdatedAt = time.Unix(updatedAtUnix/1000, 0)
+		if createdAt.Valid {
+			notification.CreatedAt = createdAt.Time
+		}
+		if updatedAt.Valid {
+			notification.UpdatedAt = updatedAt.Time
+		}
 		notifications = append(notifications, notification)
 	}
 

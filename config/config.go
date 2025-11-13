@@ -19,3 +19,12 @@ func GetBearerToken() string {
 	}
 	return token
 }
+
+// GetJWTSecret returns the JWT secret key
+func GetJWTSecret() string {
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		secret = "your-secret-key-change-in-production-2024-fdm-system"
+	}
+	return secret
+}

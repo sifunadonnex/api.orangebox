@@ -3,6 +3,7 @@ package handlers
 import (
 	"database/sql"
 	"fdm-backend/models"
+	"fdm-backend/utils"
 	"log"
 	"net/http"
 	"time"
@@ -20,51 +21,57 @@ func NewUserHandler(db *sql.DB) *UserHandler {
 	return &UserHandler{db: db}
 }
 
-// Login handles user authentication
+// Login handles user authentication with JWT
 func (h *UserHandler) Login(c *gin.Context) {
 	log.Println("Login attempt started")
-	
+
 	var req models.LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		log.Printf("Error binding JSON: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Please provide an email and password"})
 		return
 	}
-	
+
 	log.Printf("Login attempt for email: %s", req.Email)
 
-	// Find user by email - handle SQLite datetime as int64
+	// Find user by email with new schema
 	var user models.User
-	var role, fullName, designation, department, gateId, username, password, image, company, phone sql.NullString
-	var createdAtUnix, updatedAtUnix sql.NullInt64
+	var fullName, designation, department, username, password, image, phone, companyID, lastLoginAt sql.NullString
+	var isActive bool
+	var createdAt, updatedAt time.Time
 
-	query := `SELECT id, email, role, fullName, designation, department, gateId, username, password, image, company, phone, createdAt, updatedAt FROM User WHERE email = ?`
-	log.Printf("Executing query: %s with email: %s", query, req.Email)
-	
-	row := h.db.QueryRow(query, req.Email)
-	
-	err := row.Scan(&user.ID, &user.Email, &role, &fullName, &designation, 
-		&department, &gateId, &username, &password, &image, 
-		&company, &phone, &createdAtUnix, &updatedAtUnix)
-	
+	query := `
+		SELECT id, email, role, fullName, designation, department, username, password, image, 
+		       phone, isActive, companyId, lastLoginAt, createdAt, updatedAt 
+		FROM User WHERE email = ?
+	`
+
+	err := h.db.QueryRow(query, req.Email).Scan(
+		&user.ID, &user.Email, &user.Role, &fullName, &designation,
+		&department, &username, &password, &image, &phone, &isActive,
+		&companyID, &lastLoginAt, &createdAt, &updatedAt,
+	)
+
 	if err == sql.ErrNoRows {
 		log.Printf("No user found with email: %s", req.Email)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "No User Found!!"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 	if err != nil {
-		// More detailed error logging
 		log.Printf("Database scan error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error", "details": err.Error()})
 		return
 	}
-	
-	log.Printf("User found: %s", user.Email)
 
-	// Map nullable fields to pointers
-	if role.Valid {
-		user.Role = &role.String
+	log.Printf("User found: %s with role: %s", user.Email, user.Role)
+
+	// Check if user is active
+	if !isActive {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Account is deactivated"})
+		return
 	}
+
+	// Map nullable fields
 	if fullName.Valid {
 		user.FullName = &fullName.String
 	}
@@ -74,92 +81,261 @@ func (h *UserHandler) Login(c *gin.Context) {
 	if department.Valid {
 		user.Department = &department.String
 	}
-	if gateId.Valid {
-		user.GateID = &gateId.String
-	}
 	if username.Valid {
 		user.Username = &username.String
-	}
-	if password.Valid {
-		user.Password = &password.String
 	}
 	if image.Valid {
 		user.Image = &image.String
 	}
-	if company.Valid {
-		user.Company = &company.String
-	}
 	if phone.Valid {
 		user.Phone = &phone.String
 	}
-	if createdAtUnix.Valid {
-		user.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0) // Convert milliseconds to seconds
+	if companyID.Valid {
+		user.CompanyID = &companyID.String
 	}
-	if updatedAtUnix.Valid {
-		user.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0) // Convert milliseconds to seconds
-	}
+	user.IsActive = isActive
+	user.CreatedAt = createdAt
+	user.UpdatedAt = updatedAt
 
 	// Verify password
-	if user.Password == nil {
+	if !password.Valid {
 		log.Println("User has no password set")
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid credentials"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
 	log.Println("Verifying password...")
-	err = bcrypt.CompareHashAndPassword([]byte(*user.Password), []byte(req.Password))
+	err = bcrypt.CompareHashAndPassword([]byte(password.String), []byte(req.Password))
 	if err != nil {
 		log.Printf("Password verification failed: %v", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid credentials"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
-	log.Println("Login successful")
-	// Remove sensitive information and prepare response
-	user.Password = nil
-	// Add name field for compatibility
-	response := struct {
-		models.User
-		Name *string `json:"name"`
-	}{
-		User: user,
-		Name: user.FullName,
+	// Check company status if user belongs to a company
+	if user.CompanyID != nil {
+		var companyStatus string
+		err = h.db.QueryRow("SELECT status FROM Company WHERE id = ?", *user.CompanyID).Scan(&companyStatus)
+		if err == nil {
+			if companyStatus == "suspended" || companyStatus == "expired" {
+				c.JSON(http.StatusForbidden, gin.H{
+					"error":   "Company account is " + companyStatus,
+					"message": "Please contact support to reactivate your account",
+				})
+				return
+			}
+		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"user": response})
+	// Generate JWT token
+	token, err := utils.GenerateJWT(user.ID, user.Email, user.Role, user.CompanyID)
+	if err != nil {
+		log.Printf("Error generating JWT: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating token"})
+		return
+	}
+
+	// Update last login
+	now := time.Now()
+	h.db.Exec("UPDATE User SET lastLoginAt = ? WHERE id = ?", now, user.ID)
+	user.LastLoginAt = &now
+
+	// Fetch company details if exists
+	if user.CompanyID != nil {
+		company := &models.Company{}
+		err = h.db.QueryRow(`
+			SELECT id, name, email, phone, address, country, logo, status, subscriptionId, createdAt, updatedAt 
+			FROM Company WHERE id = ?
+		`, *user.CompanyID).Scan(
+			&company.ID, &company.Name, &company.Email, &company.Phone, &company.Address,
+			&company.Country, &company.Logo, &company.Status, &company.SubscriptionID,
+			&company.CreatedAt, &company.UpdatedAt,
+		)
+		if err == nil {
+			user.Company = company
+		}
+	}
+
+	log.Println("Login successful")
+
+	// Return user with token (no password)
+	c.JSON(http.StatusOK, gin.H{
+		"user":    user,
+		"token":   token,
+		"message": "Login successful",
+	})
 }
 
 // GetUsers retrieves all users
 func (h *UserHandler) GetUsers(c *gin.Context) {
-	query := `SELECT id, email, role, fullName, designation, department, gateId, username, password, image, company, phone, createdAt, updatedAt FROM User`
-	rows, err := h.db.Query(query)
+	// Get requesting user's role and company
+	userRole, _ := c.Get("userRole")
+	userCompanyID, companyExists := c.Get("userCompanyId")
+
+	query := `
+		SELECT id, email, role, fullName, designation, department, username, image, 
+		       phone, isActive, companyId, lastLoginAt, createdAt, updatedAt 
+		FROM User
+	`
+	args := []interface{}{}
+
+	// Non-admin users can only see users from their company
+	if userRole != models.RoleAdmin && userRole != models.RoleFDA {
+		if companyExists {
+			query += " WHERE companyId = ?"
+			args = append(args, userCompanyID)
+		}
+	}
+
+	query += " ORDER BY createdAt DESC"
+
+	rows, err := h.db.Query(query, args...)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error", "details": err.Error()})
 		return
 	}
 	defer rows.Close()
 
-	var users []models.User
+	users := []models.User{}
 	for rows.Next() {
 		var user models.User
-		var createdAtUnix, updatedAtUnix sql.NullInt64
-		
-		err := rows.Scan(&user.ID, &user.Email, &user.Role, &user.FullName, &user.Designation,
-			&user.Department, &user.GateID, &user.Username, &user.Password, &user.Image,
-			&user.Company, &user.Phone, &createdAtUnix, &updatedAtUnix)
+		var fullName, designation, department, username, image, phone, companyID sql.NullString
+		var lastLoginAt sql.NullTime
+
+		err := rows.Scan(
+			&user.ID, &user.Email, &user.Role, &fullName, &designation,
+			&department, &username, &image, &phone, &user.IsActive,
+			&companyID, &lastLoginAt, &user.CreatedAt, &user.UpdatedAt,
+		)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning user"})
 			return
 		}
-		
-		if createdAtUnix.Valid {
-			user.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
+
+		// Map nullable fields
+		if fullName.Valid {
+			user.FullName = &fullName.String
 		}
-		if updatedAtUnix.Valid {
-			user.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
+		if designation.Valid {
+			user.Designation = &designation.String
 		}
-		
-		user.Password = nil // Remove password from response
+		if department.Valid {
+			user.Department = &department.String
+		}
+		if username.Valid {
+			user.Username = &username.String
+		}
+		if image.Valid {
+			user.Image = &image.String
+		}
+		if phone.Valid {
+			user.Phone = &phone.String
+		}
+		if companyID.Valid {
+			user.CompanyID = &companyID.String
+		}
+		if lastLoginAt.Valid {
+			user.LastLoginAt = &lastLoginAt.Time
+		}
+
+		users = append(users, user)
+	}
+
+	c.JSON(http.StatusOK, users)
+}
+
+// GetUserByID retrieves a specific user
+func (h *UserHandler) GetUserByID(c *gin.Context) {
+	id := c.Param("id")
+
+	user, err := h.getUserByID(id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, user)
+}
+
+// GetUserByEmail retrieves a user by email
+func (h *UserHandler) GetUserByEmail(c *gin.Context) {
+	email := c.Param("email")
+
+	user, err := h.getUserByEmail(email)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, user)
+}
+
+// GetUsersByCompanyID retrieves all users for a company
+func (h *UserHandler) GetUsersByCompanyID(c *gin.Context) {
+	companyID := c.Param("companyId")
+
+	query := `
+		SELECT id, email, role, fullName, designation, department, username, image, 
+		       phone, isActive, companyId, lastLoginAt, createdAt, updatedAt 
+		FROM User WHERE companyId = ? ORDER BY createdAt DESC
+	`
+
+	rows, err := h.db.Query(query, companyID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error", "details": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	users := []models.User{}
+	for rows.Next() {
+		var user models.User
+		var fullName, designation, department, username, image, phone, cID sql.NullString
+		var lastLoginAt sql.NullTime
+
+		err := rows.Scan(
+			&user.ID, &user.Email, &user.Role, &fullName, &designation,
+			&department, &username, &image, &phone, &user.IsActive,
+			&cID, &lastLoginAt, &user.CreatedAt, &user.UpdatedAt,
+		)
+		if err != nil {
+			continue
+		}
+
+		// Map nullable fields
+		if fullName.Valid {
+			user.FullName = &fullName.String
+		}
+		if designation.Valid {
+			user.Designation = &designation.String
+		}
+		if department.Valid {
+			user.Department = &department.String
+		}
+		if username.Valid {
+			user.Username = &username.String
+		}
+		if image.Valid {
+			user.Image = &image.String
+		}
+		if phone.Valid {
+			user.Phone = &phone.String
+		}
+		if cID.Valid {
+			user.CompanyID = &cID.String
+		}
+		if lastLoginAt.Valid {
+			user.LastLoginAt = &lastLoginAt.Time
+		}
+
 		users = append(users, user)
 	}
 
@@ -175,7 +351,31 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 		return
 	}
 
-	log.Printf("CreateUser: Creating user with email: %s", req.Email)
+	log.Printf("CreateUser: Creating user with email: %s, role: %s", req.Email, req.Role)
+
+	// Validate role
+	validRoles := []string{models.RoleAdmin, models.RoleFDA, models.RoleGatekeeper, models.RoleUser}
+	isValidRole := false
+	for _, role := range validRoles {
+		if req.Role == role {
+			isValidRole = true
+			break
+		}
+	}
+	if !isValidRole {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid role. Must be one of: admin, fda, gatekeeper, user"})
+		return
+	}
+
+	// Check if company exists if companyID is provided
+	if req.CompanyID != nil {
+		var companyExists bool
+		err := h.db.QueryRow("SELECT EXISTS(SELECT 1 FROM Company WHERE id = ?)", *req.CompanyID).Scan(&companyExists)
+		if err != nil || !companyExists {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Company not found"})
+			return
+		}
+	}
 
 	// Hash password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
@@ -189,11 +389,18 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 	id := uuid.New().String()
 	now := time.Now()
 
-	// Insert user
-	query := `INSERT INTO User (id, email, role, fullName, username, password, company, createdAt, updatedAt) 
-			  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	
-	_, err = h.db.Exec(query, id, req.Email, req.Role, req.FullName, req.Username, string(hashedPassword), req.Company, now.UnixMilli(), now.UnixMilli())
+	// Insert user with new schema
+	query := `
+		INSERT INTO User (
+			id, email, role, fullName, username, password, phone, designation, 
+			department, isActive, companyId, createdAt, updatedAt
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+	`
+
+	_, err = h.db.Exec(query,
+		id, req.Email, req.Role, req.FullName, req.Username, string(hashedPassword),
+		req.Phone, req.Designation, req.Department, req.CompanyID, now, now,
+	)
 	if err != nil {
 		log.Printf("CreateUser: Database error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error creating user", "details": err.Error()})
@@ -202,16 +409,11 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 
 	log.Printf("CreateUser: User created successfully with ID: %s", id)
 
-	// Return created user (without password)
-	user := models.User{
-		ID:        id,
-		Email:     req.Email,
-		Role:      &req.Role,
-		FullName:  &req.FullName,
-		Username:  &req.Username,
-		Company:   &req.Company,
-		CreatedAt: now,
-		UpdatedAt: now,
+	// Fetch and return created user
+	user, err := h.getUserByID(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "User created but failed to fetch"})
+		return
 	}
 
 	c.JSON(http.StatusCreated, user)
@@ -221,7 +423,7 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 func (h *UserHandler) UpdateUser(c *gin.Context) {
 	id := c.Param("id")
 	log.Printf("UpdateUser: Received request for user ID: %s", id)
-	
+
 	var req models.UpdateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		log.Printf("UpdateUser: Error binding JSON: %v", err)
@@ -229,326 +431,78 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 		return
 	}
 
-	log.Printf("UpdateUser: Update level: %s", req.UpdateLevel)
 	now := time.Now()
 
-	switch req.UpdateLevel {
-	case "password":
-		if req.Password == nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Password is required"})
-			return
-		}
+	// Build dynamic update query
+	query := "UPDATE User SET updatedAt = ?"
+	args := []interface{}{now}
+
+	if req.FullName != nil {
+		query += ", fullName = ?"
+		args = append(args, *req.FullName)
+	}
+	if req.Username != nil {
+		query += ", username = ?"
+		args = append(args, *req.Username)
+	}
+	if req.Email != nil {
+		query += ", email = ?"
+		args = append(args, *req.Email)
+	}
+	if req.Phone != nil {
+		query += ", phone = ?"
+		args = append(args, *req.Phone)
+	}
+	if req.Department != nil {
+		query += ", department = ?"
+		args = append(args, *req.Department)
+	}
+	if req.Designation != nil {
+		query += ", designation = ?"
+		args = append(args, *req.Designation)
+	}
+	if req.Role != nil {
+		query += ", role = ?"
+		args = append(args, *req.Role)
+	}
+	if req.CompanyID != nil {
+		query += ", companyId = ?"
+		args = append(args, *req.CompanyID)
+	}
+	if req.IsActive != nil {
+		query += ", isActive = ?"
+		args = append(args, *req.IsActive)
+	}
+	if req.Password != nil {
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(*req.Password), bcrypt.DefaultCost)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error hashing password"})
 			return
 		}
-		query := `UPDATE User SET password = ?, updatedAt = ? WHERE id = ?`
-		_, err = h.db.Exec(query, string(hashedPassword), now.UnixMilli(), id)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating user"})
-			return
-		}
+		query += ", password = ?"
+		args = append(args, string(hashedPassword))
+	}
 
-	case "profile":
-		query := `UPDATE User SET fullName = ?, username = ?, email = ?, company = ?, phone = ?, department = ?, designation = ?, updatedAt = ? WHERE id = ?`
-		_, err := h.db.Exec(query, req.FullName, req.Username, req.Email, req.Company, req.Phone, req.Department, req.Designation, now.UnixMilli(), id)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating user"})
-			return
-		}
+	query += " WHERE id = ?"
+	args = append(args, id)
 
-	case "admin":
-		if req.Password == nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Password is required for admin update"})
-			return
-		}
-		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(*req.Password), bcrypt.DefaultCost)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error hashing password"})
-			return
-		}
-		query := `UPDATE User SET fullName = ?, username = ?, email = ?, company = ?, phone = ?, role = ?, password = ?, updatedAt = ? WHERE id = ?`
-		_, err = h.db.Exec(query, req.FullName, req.Username, req.Email, req.Company, req.Phone, req.Role, string(hashedPassword), now.UnixMilli(), id)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating user"})
-			return
-		}
+	result, err := h.db.Exec(query, args...)
+	if err != nil {
+		log.Printf("UpdateUser: Error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating user", "details": err.Error()})
+		return
+	}
 
-	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid update level"})
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
 
 	// Fetch and return updated user
-	query := `SELECT u.id, u.email, u.role, u.fullName, u.designation, u.department, u.gateId, u.username, u.password, u.image, u.company, u.phone, u.createdAt, u.updatedAt 
-			  FROM User u WHERE u.id = ?`
-	
-	var user models.User
-	var createdAtUnix, updatedAtUnix sql.NullInt64
-	row := h.db.QueryRow(query, id)
-	err := row.Scan(&user.ID, &user.Email, &user.Role, &user.FullName, &user.Designation,
-		&user.Department, &user.GateID, &user.Username, &user.Password, &user.Image,
-		&user.Company, &user.Phone, &createdAtUnix, &updatedAtUnix)
-	
+	user, err := h.getUserByID(id)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error fetching user"})
-		return
-	}
-
-	// Convert Unix timestamps to time.Time
-	if createdAtUnix.Valid {
-		user.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
-	}
-	if updatedAtUnix.Valid {
-		user.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
-	}
-
-	// Don't return password
-	user.Password = nil
-
-	c.JSON(http.StatusOK, user)
-}
-
-// GetUserByID retrieves a user by ID
-func (h *UserHandler) GetUserByID(c *gin.Context) {
-	id := c.Param("id")
-	
-	// Get user with aircraft
-	query := `SELECT u.id, u.email, u.role, u.fullName, u.designation, u.department, u.gateId, u.username, u.password, u.image, u.company, u.phone, u.createdAt, u.updatedAt 
-			  FROM User u WHERE u.id = ?`
-	
-	var user models.User
-	var createdAtUnix, updatedAtUnix sql.NullInt64
-	row := h.db.QueryRow(query, id)
-	err := row.Scan(&user.ID, &user.Email, &user.Role, &user.FullName, &user.Designation,
-		&user.Department, &user.GateID, &user.Username, &user.Password, &user.Image,
-		&user.Company, &user.Phone, &createdAtUnix, &updatedAtUnix)
-	
-	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
-		return
-	}
-
-	// Handle datetime conversion
-	if createdAtUnix.Valid {
-		user.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
-	}
-	if updatedAtUnix.Valid {
-		user.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
-	}
-
-	user.Password = nil // Remove password from response
-
-	// Get user's aircraft
-	aircraftQuery := `SELECT id, airline, aircraftMake, modelNumber, serialNumber, userId, parameters, createdAt, updatedAt FROM Aircraft WHERE userId = ?`
-	aircraftRows, err := h.db.Query(aircraftQuery, id)
-	if err == nil {
-		defer aircraftRows.Close()
-		var aircraft []models.Aircraft
-		for aircraftRows.Next() {
-			var a models.Aircraft
-			var modelNumber, parameters sql.NullString
-			var aircraftCreatedAtUnix, aircraftUpdatedAtUnix sql.NullInt64
-			
-			err := aircraftRows.Scan(&a.ID, &a.Airline, &a.AircraftMake, &modelNumber, &a.SerialNumber, &a.UserID, &parameters, &aircraftCreatedAtUnix, &aircraftUpdatedAtUnix)
-			if err == nil {
-				// Handle nullable fields
-				if modelNumber.Valid {
-					a.ModelNumber = &modelNumber.String
-				}
-				if parameters.Valid {
-					a.Parameters = &parameters.String
-				}
-				if aircraftCreatedAtUnix.Valid {
-					a.CreatedAt = time.Unix(aircraftCreatedAtUnix.Int64/1000, 0)
-				}
-				if aircraftUpdatedAtUnix.Valid {
-					a.UpdatedAt = time.Unix(aircraftUpdatedAtUnix.Int64/1000, 0)
-				}
-				aircraft = append(aircraft, a)
-			}
-		}
-		
-		// Create response with aircraft
-		response := struct {
-			models.User
-			Aircraft []models.Aircraft `json:"Aircraft"`
-		}{
-			User:     user,
-			Aircraft: aircraft,
-		}
-		c.JSON(http.StatusOK, response)
-		return
-	}
-
-	c.JSON(http.StatusOK, user)
-}
-
-// GetUsersByGateID retrieves users by gate ID
-func (h *UserHandler) GetUsersByGateID(c *gin.Context) {
-	gateID := c.Param("id")
-	
-	query := `SELECT u.id, u.email, u.role, u.fullName, u.designation, u.department, u.gateId, u.username, u.password, u.image, u.company, u.phone, u.createdAt, u.updatedAt 
-			  FROM User u WHERE u.gateId = ?`
-	
-	rows, err := h.db.Query(query, gateID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
-		return
-	}
-	defer rows.Close()
-
-	var users []interface{}
-	for rows.Next() {
-		var user models.User
-		var createdAtUnix, updatedAtUnix sql.NullInt64
-		
-		err := rows.Scan(&user.ID, &user.Email, &user.Role, &user.FullName, &user.Designation,
-			&user.Department, &user.GateID, &user.Username, &user.Password, &user.Image,
-			&user.Company, &user.Phone, &createdAtUnix, &updatedAtUnix)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning user"})
-			return
-		}
-
-		// Handle datetime conversion
-		if createdAtUnix.Valid {
-			user.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
-		}
-		if updatedAtUnix.Valid {
-			user.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
-		}
-		if err != nil {
-			continue
-		}
-		user.Password = nil
-
-		// Get user's aircraft
-		aircraftQuery := `SELECT id, airline, aircraftMake, modelNumber, serialNumber, userId, parameters, createdAt, updatedAt FROM Aircraft WHERE userId = ?`
-		aircraftRows, err := h.db.Query(aircraftQuery, user.ID)
-		if err == nil {
-			defer aircraftRows.Close()
-			var aircraft []models.Aircraft
-			for aircraftRows.Next() {
-				var a models.Aircraft
-				var modelNumber, parameters sql.NullString
-				var aircraftCreatedAtUnix, aircraftUpdatedAtUnix sql.NullInt64
-				
-				err := aircraftRows.Scan(&a.ID, &a.Airline, &a.AircraftMake, &modelNumber, &a.SerialNumber, &a.UserID, &parameters, &aircraftCreatedAtUnix, &aircraftUpdatedAtUnix)
-				if err == nil {
-					// Handle nullable fields
-					if modelNumber.Valid {
-						a.ModelNumber = &modelNumber.String
-					}
-					if parameters.Valid {
-						a.Parameters = &parameters.String
-					}
-					if aircraftCreatedAtUnix.Valid {
-						a.CreatedAt = time.Unix(aircraftCreatedAtUnix.Int64/1000, 0)
-					}
-					if aircraftUpdatedAtUnix.Valid {
-						a.UpdatedAt = time.Unix(aircraftUpdatedAtUnix.Int64/1000, 0)
-					}
-					aircraft = append(aircraft, a)
-				}
-			}
-			
-			userWithAircraft := struct {
-				models.User
-				Aircraft []models.Aircraft `json:"Aircraft"`
-			}{
-				User:     user,
-				Aircraft: aircraft,
-			}
-			users = append(users, userWithAircraft)
-		} else {
-			users = append(users, user)
-		}
-	}
-
-	c.JSON(http.StatusOK, users)
-}
-
-// GetUserByEmail retrieves a user by email
-func (h *UserHandler) GetUserByEmail(c *gin.Context) {
-	email := c.Param("id") // Note: param is "id" but it's actually email
-	
-	query := `SELECT u.id, u.email, u.role, u.fullName, u.designation, u.department, u.gateId, u.username, u.password, u.image, u.company, u.phone, u.createdAt, u.updatedAt 
-			  FROM User u WHERE u.email = ?`
-	
-	var user models.User
-	var createdAtUnix, updatedAtUnix sql.NullInt64
-	row := h.db.QueryRow(query, email)
-	err := row.Scan(&user.ID, &user.Email, &user.Role, &user.FullName, &user.Designation,
-		&user.Department, &user.GateID, &user.Username, &user.Password, &user.Image,
-		&user.Company, &user.Phone, &createdAtUnix, &updatedAtUnix)
-	
-	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
-		return
-	}
-
-	// Handle datetime conversion
-	if createdAtUnix.Valid {
-		user.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
-	}
-	if updatedAtUnix.Valid {
-		user.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
-	}
-
-	user.Password = nil
-
-	// Get user's aircraft
-	aircraftQuery := `SELECT id, airline, aircraftMake, modelNumber, serialNumber, userId, parameters, createdAt, updatedAt FROM Aircraft WHERE userId = ?`
-	aircraftRows, err := h.db.Query(aircraftQuery, user.ID)
-	if err == nil {
-		defer aircraftRows.Close()
-		var aircraft []models.Aircraft
-		for aircraftRows.Next() {
-			var a models.Aircraft
-			var modelNumber, parameters sql.NullString
-			var aircraftCreatedAtUnix, aircraftUpdatedAtUnix sql.NullInt64
-			
-			err := aircraftRows.Scan(&a.ID, &a.Airline, &a.AircraftMake, &modelNumber, &a.SerialNumber, &a.UserID, &parameters, &aircraftCreatedAtUnix, &aircraftUpdatedAtUnix)
-			if err == nil {
-				// Handle nullable fields
-				if modelNumber.Valid {
-					a.ModelNumber = &modelNumber.String
-				}
-				if parameters.Valid {
-					a.Parameters = &parameters.String
-				}
-				if aircraftCreatedAtUnix.Valid {
-					a.CreatedAt = time.Unix(aircraftCreatedAtUnix.Int64/1000, 0)
-				}
-				if aircraftUpdatedAtUnix.Valid {
-					a.UpdatedAt = time.Unix(aircraftUpdatedAtUnix.Int64/1000, 0)
-				}
-				aircraft = append(aircraft, a)
-			}
-		}
-		
-		response := struct {
-			models.User
-			Aircraft []models.Aircraft `json:"Aircraft"`
-		}{
-			User:     user,
-			Aircraft: aircraft,
-		}
-		c.JSON(http.StatusOK, response)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "User updated but failed to fetch"})
 		return
 	}
 
@@ -558,11 +512,11 @@ func (h *UserHandler) GetUserByEmail(c *gin.Context) {
 // DeleteUser deletes a user
 func (h *UserHandler) DeleteUser(c *gin.Context) {
 	id := c.Param("id")
-	
-	query := `DELETE FROM User WHERE id = ?`
+
+	query := "DELETE FROM User WHERE id = ?"
 	result, err := h.db.Exec(query, id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error deleting user"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error deleting user", "details": err.Error()})
 		return
 	}
 
@@ -573,4 +527,144 @@ func (h *UserHandler) DeleteUser(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "User deleted successfully"})
+}
+
+// ActivateUser activates a user account
+func (h *UserHandler) ActivateUser(c *gin.Context) {
+	id := c.Param("id")
+
+	query := "UPDATE User SET isActive = 1, updatedAt = ? WHERE id = ?"
+	result, err := h.db.Exec(query, time.Now(), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error activating user"})
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "User activated successfully"})
+}
+
+// DeactivateUser deactivates a user account
+func (h *UserHandler) DeactivateUser(c *gin.Context) {
+	id := c.Param("id")
+
+	query := "UPDATE User SET isActive = 0, updatedAt = ? WHERE id = ?"
+	result, err := h.db.Exec(query, time.Now(), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error deactivating user"})
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "User deactivated successfully"})
+}
+
+// Helper function to get user by ID
+func (h *UserHandler) getUserByID(id string) (*models.User, error) {
+	var user models.User
+	var fullName, designation, department, username, image, phone, companyID sql.NullString
+	var lastLoginAt sql.NullTime
+
+	query := `
+		SELECT id, email, role, fullName, designation, department, username, image, 
+		       phone, isActive, companyId, lastLoginAt, createdAt, updatedAt 
+		FROM User WHERE id = ?
+	`
+
+	err := h.db.QueryRow(query, id).Scan(
+		&user.ID, &user.Email, &user.Role, &fullName, &designation,
+		&department, &username, &image, &phone, &user.IsActive,
+		&companyID, &lastLoginAt, &user.CreatedAt, &user.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Map nullable fields
+	if fullName.Valid {
+		user.FullName = &fullName.String
+	}
+	if designation.Valid {
+		user.Designation = &designation.String
+	}
+	if department.Valid {
+		user.Department = &department.String
+	}
+	if username.Valid {
+		user.Username = &username.String
+	}
+	if image.Valid {
+		user.Image = &image.String
+	}
+	if phone.Valid {
+		user.Phone = &phone.String
+	}
+	if companyID.Valid {
+		user.CompanyID = &companyID.String
+	}
+	if lastLoginAt.Valid {
+		user.LastLoginAt = &lastLoginAt.Time
+	}
+
+	return &user, nil
+}
+
+// Helper function to get user by email
+func (h *UserHandler) getUserByEmail(email string) (*models.User, error) {
+	var user models.User
+	var fullName, designation, department, username, image, phone, companyID sql.NullString
+	var lastLoginAt sql.NullTime
+
+	query := `
+		SELECT id, email, role, fullName, designation, department, username, image, 
+		       phone, isActive, companyId, lastLoginAt, createdAt, updatedAt 
+		FROM User WHERE email = ?
+	`
+
+	err := h.db.QueryRow(query, email).Scan(
+		&user.ID, &user.Email, &user.Role, &fullName, &designation,
+		&department, &username, &image, &phone, &user.IsActive,
+		&companyID, &lastLoginAt, &user.CreatedAt, &user.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Map nullable fields
+	if fullName.Valid {
+		user.FullName = &fullName.String
+	}
+	if designation.Valid {
+		user.Designation = &designation.String
+	}
+	if department.Valid {
+		user.Department = &department.String
+	}
+	if username.Valid {
+		user.Username = &username.String
+	}
+	if image.Valid {
+		user.Image = &image.String
+	}
+	if phone.Valid {
+		user.Phone = &phone.String
+	}
+	if companyID.Valid {
+		user.CompanyID = &companyID.String
+	}
+	if lastLoginAt.Valid {
+		user.LastLoginAt = &lastLoginAt.Time
+	}
+
+	return &user, nil
 }

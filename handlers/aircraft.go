@@ -20,10 +20,11 @@ func NewAircraftHandler(db *sql.DB) *AircraftHandler {
 
 // GetAircrafts retrieves all aircraft with related data
 func (h *AircraftHandler) GetAircrafts(c *gin.Context) {
-	query := `SELECT id, airline, aircraftMake, modelNumber, serialNumber, userId, parameters, createdAt, updatedAt FROM Aircraft`
+	query := `SELECT id, airline, aircraftMake, modelNumber, serialNumber, companyId, parameters, createdAt, updatedAt FROM Aircraft`
 	rows, err := h.db.Query(query)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		println("GetAircrafts query error:", err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error", "details": err.Error()})
 		return
 	}
 	defer rows.Close()
@@ -32,12 +33,13 @@ func (h *AircraftHandler) GetAircrafts(c *gin.Context) {
 	for rows.Next() {
 		var aircraft models.Aircraft
 		var modelNumber, parameters sql.NullString
-		var createdAtUnix, updatedAtUnix sql.NullInt64
+		var createdAt, updatedAt sql.NullTime
 
 		err := rows.Scan(&aircraft.ID, &aircraft.Airline, &aircraft.AircraftMake, &modelNumber,
-			&aircraft.SerialNumber, &aircraft.UserID, &parameters, &createdAtUnix, &updatedAtUnix)
+			&aircraft.SerialNumber, &aircraft.CompanyID, &parameters, &createdAt, &updatedAt)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning aircraft"})
+			println("GetAircrafts scan error:", err.Error())
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning aircraft", "details": err.Error()})
 			return
 		}
 
@@ -48,29 +50,53 @@ func (h *AircraftHandler) GetAircrafts(c *gin.Context) {
 		if parameters.Valid {
 			aircraft.Parameters = &parameters.String
 		}
-		if createdAtUnix.Valid {
-			aircraft.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
+		if createdAt.Valid {
+			aircraft.CreatedAt = createdAt.Time
 		}
-		if updatedAtUnix.Valid {
-			aircraft.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
+		if updatedAt.Valid {
+			aircraft.UpdatedAt = updatedAt.Time
+		}
+
+		// Get company details
+		company, err := h.getAircraftCompany(aircraft.CompanyID)
+		if err != nil {
+			println("Error getting company for aircraft", aircraft.ID, ":", err.Error())
+			// Don't fail the request, just log the error
 		}
 
 		// Get related CSV files
-		csvs, _ := h.getAircraftCSVs(aircraft.ID)
+		csvs, err := h.getAircraftCSVs(aircraft.ID)
+		if err != nil {
+			println("Error getting CSVs for aircraft", aircraft.ID, ":", err.Error())
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error getting CSV files", "details": err.Error()})
+			return
+		}
 
 		// Get related event logs
-		eventLogs, _ := h.getAircraftEventLogs(aircraft.ID)
+		eventLogs, err := h.getAircraftEventLogs(aircraft.ID)
+		if err != nil {
+			println("Error getting event logs for aircraft", aircraft.ID, ":", err.Error())
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error getting event logs", "details": err.Error()})
+			return
+		}
 
 		// Get related exceedances
-		exceedances, _ := h.getAircraftExceedances(aircraft.ID)
+		exceedances, err := h.getAircraftExceedances(aircraft.ID)
+		if err != nil {
+			println("Error getting exceedances for aircraft", aircraft.ID, ":", err.Error())
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error getting exceedances", "details": err.Error()})
+			return
+		}
 
 		aircraftWithRelations := struct {
 			models.Aircraft
+			Company    *models.Company     `json:"company"`
 			CSV        []models.CSV        `json:"csv"`
 			EventLog   []models.EventLog   `json:"EventLog"`
 			Exceedance []models.Exceedance `json:"Exceedance"`
 		}{
 			Aircraft:   aircraft,
+			Company:    company,
 			CSV:        csvs,
 			EventLog:   eventLogs,
 			Exceedance: exceedances,
@@ -82,12 +108,12 @@ func (h *AircraftHandler) GetAircrafts(c *gin.Context) {
 	c.JSON(http.StatusOK, aircrafts)
 }
 
-// GetAircraftsByUserID retrieves aircraft by user ID
+// GetAircraftsByUserID retrieves aircraft by company ID (kept for backward compatibility)
 func (h *AircraftHandler) GetAircraftsByUserID(c *gin.Context) {
-	userID := c.Param("id")
+	companyID := c.Param("id")
 
-	query := `SELECT id, airline, aircraftMake, modelNumber, serialNumber, userId, parameters, createdAt, updatedAt FROM Aircraft WHERE userId = ?`
-	rows, err := h.db.Query(query, userID)
+	query := `SELECT id, airline, aircraftMake, modelNumber, serialNumber, companyId, parameters, createdAt, updatedAt FROM Aircraft WHERE companyId = ?`
+	rows, err := h.db.Query(query, companyID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
@@ -98,10 +124,10 @@ func (h *AircraftHandler) GetAircraftsByUserID(c *gin.Context) {
 	for rows.Next() {
 		var aircraft models.Aircraft
 		var modelNumber, parameters sql.NullString
-		var createdAtUnix, updatedAtUnix sql.NullInt64
+		var createdAt, updatedAt sql.NullTime
 
 		err := rows.Scan(&aircraft.ID, &aircraft.Airline, &aircraft.AircraftMake, &modelNumber,
-			&aircraft.SerialNumber, &aircraft.UserID, &parameters, &createdAtUnix, &updatedAtUnix)
+			&aircraft.SerialNumber, &aircraft.CompanyID, &parameters, &createdAt, &updatedAt)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning aircraft"})
 			return
@@ -114,16 +140,19 @@ func (h *AircraftHandler) GetAircraftsByUserID(c *gin.Context) {
 		if parameters.Valid {
 			aircraft.Parameters = &parameters.String
 		}
-		if createdAtUnix.Valid {
-			aircraft.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
+		if createdAt.Valid {
+			aircraft.CreatedAt = createdAt.Time
 		}
-		if updatedAtUnix.Valid {
-			aircraft.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
+		if updatedAt.Valid {
+			aircraft.UpdatedAt = updatedAt.Time
 		}
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning aircraft"})
 			return
 		}
+
+		// Get company details
+		company, _ := h.getAircraftCompany(aircraft.CompanyID)
 
 		// Get related CSV files
 		csvs, _ := h.getAircraftCSVs(aircraft.ID)
@@ -136,11 +165,13 @@ func (h *AircraftHandler) GetAircraftsByUserID(c *gin.Context) {
 
 		aircraftWithRelations := struct {
 			models.Aircraft
+			Company    *models.Company     `json:"company"`
 			CSV        []models.CSV        `json:"csv"`
 			EventLog   []models.EventLog   `json:"EventLog"`
 			Exceedance []models.Exceedance `json:"Exceedance"`
 		}{
 			Aircraft:   aircraft,
+			Company:    company,
 			CSV:        csvs,
 			EventLog:   eventLogs,
 			Exceedance: exceedances,
@@ -165,10 +196,10 @@ func (h *AircraftHandler) CreateAircraft(c *gin.Context) {
 	now := time.Now()
 
 	// Insert aircraft
-	query := `INSERT INTO Aircraft (id, airline, aircraftMake, serialNumber, userId, parameters, createdAt, updatedAt) 
+	query := `INSERT INTO Aircraft (id, airline, aircraftMake, serialNumber, companyId, parameters, createdAt, updatedAt) 
 			  VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 
-	_, err := h.db.Exec(query, id, req.Airline, req.AircraftMake, req.SerialNumber, req.User, req.Parameters, now.UnixMilli(), now.UnixMilli())
+	_, err := h.db.Exec(query, id, req.Airline, req.AircraftMake, req.SerialNumber, req.CompanyID, req.Parameters, now.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error creating aircraft"})
 		return
@@ -180,7 +211,7 @@ func (h *AircraftHandler) CreateAircraft(c *gin.Context) {
 		Airline:      req.Airline,
 		AircraftMake: req.AircraftMake,
 		SerialNumber: req.SerialNumber,
-		UserID:       req.User,
+		CompanyID:    req.CompanyID,
 		Parameters:   req.Parameters,
 		CreatedAt:    now,
 		UpdatedAt:    now,
@@ -200,8 +231,8 @@ func (h *AircraftHandler) UpdateAircraft(c *gin.Context) {
 
 	now := time.Now()
 
-	query := `UPDATE Aircraft SET airline = ?, aircraftMake = ?, serialNumber = ?, userId = ?, parameters = ?, updatedAt = ? WHERE id = ?`
-	result, err := h.db.Exec(query, req.Airline, req.AircraftMake, req.SerialNumber, req.User, req.Parameters, now.UnixMilli(), id)
+	query := `UPDATE Aircraft SET airline = ?, aircraftMake = ?, serialNumber = ?, companyId = ?, parameters = ?, updatedAt = ? WHERE id = ?`
+	result, err := h.db.Exec(query, req.Airline, req.AircraftMake, req.SerialNumber, req.CompanyID, req.Parameters, now.UnixMilli(), id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating aircraft"})
 		return
@@ -219,7 +250,7 @@ func (h *AircraftHandler) UpdateAircraft(c *gin.Context) {
 		Airline:      req.Airline,
 		AircraftMake: req.AircraftMake,
 		SerialNumber: req.SerialNumber,
-		UserID:       req.User,
+		CompanyID:    req.CompanyID,
 		Parameters:   req.Parameters,
 		UpdatedAt:    now,
 	}
@@ -260,19 +291,19 @@ func (h *AircraftHandler) getAircraftCSVs(aircraftID string) ([]models.CSV, erro
 	var csvs []models.CSV
 	for rows.Next() {
 		var csv models.CSV
-		var createdAtUnix, updatedAtUnix sql.NullInt64
+		var createdAt, updatedAt sql.NullTime
 
 		err := rows.Scan(&csv.ID, &csv.Name, &csv.File, &csv.Status, &csv.Departure, &csv.Pilot,
-			&csv.Destination, &csv.FlightHours, &csv.AircraftID, &createdAtUnix, &updatedAtUnix)
+			&csv.Destination, &csv.FlightHours, &csv.AircraftID, &createdAt, &updatedAt)
 		if err != nil {
 			continue
 		}
 
-		if createdAtUnix.Valid {
-			csv.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
+		if createdAt.Valid {
+			csv.CreatedAt = createdAt.Time
 		}
-		if updatedAtUnix.Valid {
-			csv.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
+		if updatedAt.Valid {
+			csv.UpdatedAt = updatedAt.Time
 		}
 
 		csvs = append(csvs, csv)
@@ -292,21 +323,21 @@ func (h *AircraftHandler) getAircraftEventLogs(aircraftID string) ([]models.Even
 	var eventLogs []models.EventLog
 	for rows.Next() {
 		var eventLog models.EventLog
-		var createdAtUnix, updatedAtUnix sql.NullInt64
+		var createdAt, updatedAt sql.NullTime
 
 		err := rows.Scan(&eventLog.ID, &eventLog.EventName, &eventLog.DisplayName, &eventLog.EventCode,
 			&eventLog.EventDescription, &eventLog.EventParameter, &eventLog.EventTrigger, &eventLog.EventType,
 			&eventLog.FlightPhase, &eventLog.High, &eventLog.High1, &eventLog.High2, &eventLog.Low,
-			&eventLog.Low1, &eventLog.Low2, &eventLog.TriggerType, &eventLog.DetectionPeriod, &eventLog.Severities, &eventLog.SOP, &eventLog.AircraftID, &createdAtUnix, &updatedAtUnix)
+			&eventLog.Low1, &eventLog.Low2, &eventLog.TriggerType, &eventLog.DetectionPeriod, &eventLog.Severities, &eventLog.SOP, &eventLog.AircraftID, &createdAt, &updatedAt)
 		if err != nil {
 			continue
 		}
 
-		if createdAtUnix.Valid {
-			eventLog.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
+		if createdAt.Valid {
+			eventLog.CreatedAt = createdAt.Time
 		}
-		if updatedAtUnix.Valid {
-			eventLog.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
+		if updatedAt.Valid {
+			eventLog.UpdatedAt = updatedAt.Time
 		}
 
 		eventLogs = append(eventLogs, eventLog)
@@ -326,25 +357,49 @@ func (h *AircraftHandler) getAircraftExceedances(aircraftID string) ([]models.Ex
 	var exceedances []models.Exceedance
 	for rows.Next() {
 		var exceedance models.Exceedance
-		var createdAtUnix, updatedAtUnix sql.NullInt64
+		var createdAt, updatedAt sql.NullTime
 
 		err := rows.Scan(&exceedance.ID, &exceedance.ExceedanceValues, &exceedance.FlightPhase,
 			&exceedance.ParameterName, &exceedance.Description, &exceedance.EventStatus,
 			&exceedance.AircraftID, &exceedance.FlightID, &exceedance.File, &exceedance.EventID,
-			&exceedance.Comment, &exceedance.ExceedanceLevel, &createdAtUnix, &updatedAtUnix)
+			&exceedance.Comment, &exceedance.ExceedanceLevel, &createdAt, &updatedAt)
 		if err != nil {
 			continue
 		}
 
-		if createdAtUnix.Valid {
-			exceedance.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
+		if createdAt.Valid {
+			exceedance.CreatedAt = createdAt.Time
 		}
-		if updatedAtUnix.Valid {
-			exceedance.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
+		if updatedAt.Valid {
+			exceedance.UpdatedAt = updatedAt.Time
 		}
 
 		exceedances = append(exceedances, exceedance)
 	}
 
 	return exceedances, nil
+}
+
+func (h *AircraftHandler) getAircraftCompany(companyID string) (*models.Company, error) {
+	var company models.Company
+	query := `SELECT id, name, email, phone, address, country, logo, status, subscriptionId, createdAt, updatedAt FROM Company WHERE id = ?`
+
+	var createdAt, updatedAt sql.NullTime
+	err := h.db.QueryRow(query, companyID).Scan(
+		&company.ID, &company.Name, &company.Email, &company.Phone,
+		&company.Address, &company.Country, &company.Logo, &company.Status,
+		&company.SubscriptionID, &createdAt, &updatedAt)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if createdAt.Valid {
+		company.CreatedAt = createdAt.Time
+	}
+	if updatedAt.Valid {
+		company.UpdatedAt = updatedAt.Time
+	}
+
+	return &company, nil
 }

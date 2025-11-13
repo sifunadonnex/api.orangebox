@@ -53,11 +53,16 @@ func main() {
 	// Initialize handlers
 	log.Println("Initializing handlers...")
 	userHandler := handlers.NewUserHandler(db)
+	companyHandler := handlers.NewCompanyHandler(db)
+	subscriptionHandler := handlers.NewSubscriptionHandler(db)
 	aircraftHandler := handlers.NewAircraftHandler(db)
 	csvHandler := handlers.NewCSVHandler(db)
 	eventHandler := handlers.NewEventHandler(db)
 	exceedanceHandler := handlers.NewExceedanceHandler(db)
 	notificationHandler := handlers.NewNotificationHandler(db)
+
+	// Set database for auth middleware
+	middleware.SetDB(db)
 
 	// Public routes
 	log.Println("Setting up routes...")
@@ -80,53 +85,100 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"message": "Hello World!"})
 	})
 
-	// Protected routes
-	protected := router.Group("/")
-	protected.Use(middleware.AuthenticateToken())
+	// Protected routes - all require authentication
+	api := router.Group("/api")
+	api.Use(middleware.AuthenticateToken())
 	{
-		// User routes
-		protected.GET("/users", userHandler.GetUsers)
-		protected.POST("/users", userHandler.CreateUser)
-		protected.PUT("/users/:id", userHandler.UpdateUser)
-		protected.GET("/users/:id", userHandler.GetUserByID)
-		protected.GET("/users/gate/:id", userHandler.GetUsersByGateID)
-		protected.GET("/user/:id", userHandler.GetUserByEmail)
-		protected.DELETE("/users/:id", userHandler.DeleteUser)
+		// Company Management Routes (Admin Only)
+		companies := api.Group("/companies")
+		companies.Use(middleware.AdminOnly())
+		{
+			companies.POST("", companyHandler.CreateCompany)
+			companies.GET("", companyHandler.GetCompanies)
+			companies.PUT("/:id", companyHandler.UpdateCompany)
+			companies.DELETE("/:id", companyHandler.DeleteCompany)
+			companies.PUT("/:id/suspend", companyHandler.SuspendCompany)
+			companies.PUT("/:id/activate", companyHandler.ActivateCompany)
+		}
+		// Public company endpoint - any authenticated user can view company by ID
+		api.GET("/companies/:id", middleware.AnyAuthenticatedUser(), companyHandler.GetCompanyByID)
 
-		// Aircraft routes
-		protected.GET("/aircrafts", aircraftHandler.GetAircrafts)
-		protected.GET("/aircrafts/:id", aircraftHandler.GetAircraftsByUserID)
-		protected.POST("/aircrafts", aircraftHandler.CreateAircraft)
-		protected.PUT("/aircrafts/:id", aircraftHandler.UpdateAircraft)
-		protected.DELETE("/aircrafts/:id", aircraftHandler.DeleteAircraft)
+		// Subscription Management Routes (Admin Only)
+		subscriptions := api.Group("/subscriptions")
+		subscriptions.Use(middleware.AdminOnly())
+		{
+			subscriptions.POST("", subscriptionHandler.CreateSubscription)
+			subscriptions.GET("", subscriptionHandler.GetSubscriptions)
+			subscriptions.GET("/:id", subscriptionHandler.GetSubscriptionByID)
+			subscriptions.PUT("/:id", subscriptionHandler.UpdateSubscription)
+			subscriptions.DELETE("/:id", subscriptionHandler.DeleteSubscription)
+			subscriptions.GET("/:id/status", subscriptionHandler.GetSubscriptionStatus)
+			subscriptions.POST("/check-expired", subscriptionHandler.CheckExpiredSubscriptions)
+		}
 
-		// CSV routes
-		protected.POST("/csv", csvHandler.UploadCSV)
-		protected.GET("/csv", csvHandler.GetCSVs)
-		protected.GET("/csv/:id", csvHandler.DownloadCSV)
-		protected.GET("/flight/:id", csvHandler.GetCSVByID)
-		protected.DELETE("/csv/:id", csvHandler.DeleteCSV)
+		// User Management Routes
+		users := api.Group("/users")
+		{
+			users.GET("", middleware.GatekeeperOrAbove(), userHandler.GetUsers)
+			users.POST("", middleware.GatekeeperOrAbove(), userHandler.CreateUser)
+			users.GET("/email/:email", middleware.AnyAuthenticatedUser(), userHandler.GetUserByEmail)
+			users.GET("/:id", middleware.AnyAuthenticatedUser(), userHandler.GetUserByID)
+			users.PUT("/:id", middleware.GatekeeperOrAbove(), userHandler.UpdateUser)
+			users.DELETE("/:id", middleware.AdminOrFDA(), userHandler.DeleteUser)
+			users.PUT("/:id/activate", middleware.AdminOrFDA(), userHandler.ActivateUser)
+			users.PUT("/:id/deactivate", middleware.AdminOrFDA(), userHandler.DeactivateUser)
+			users.GET("/company/:companyId", middleware.GatekeeperOrAbove(), userHandler.GetUsersByCompanyID)
+		}
 
-		// Event routes
-		protected.POST("/events", eventHandler.CreateEvent)
-		protected.GET("/events", eventHandler.GetEvents)
-		protected.GET("/events/:id", eventHandler.GetEventByID)
-		protected.PUT("/events/:id", eventHandler.UpdateEvent)
-		protected.DELETE("/events/:id", eventHandler.DeleteEvent)
+		// Aircraft Management Routes (Company-scoped)
+		aircrafts := api.Group("/aircrafts")
+		{
+			aircrafts.GET("", middleware.AnyAuthenticatedUser(), aircraftHandler.GetAircrafts)
+			aircrafts.POST("", middleware.GatekeeperOrAbove(), aircraftHandler.CreateAircraft)
+			aircrafts.GET("/:id", middleware.AnyAuthenticatedUser(), aircraftHandler.GetAircraftsByUserID)
+			aircrafts.PUT("/:id", middleware.GatekeeperOrAbove(), aircraftHandler.UpdateAircraft)
+			aircrafts.DELETE("/:id", middleware.AdminOrFDA(), aircraftHandler.DeleteAircraft)
+		}
 
-		// Exceedance routes
-		protected.GET("/exceedances", exceedanceHandler.GetExceedances)
-		protected.GET("/exceedances/:id", exceedanceHandler.GetExceedanceByID)
-		protected.GET("/exceedances/flight/:id", exceedanceHandler.GetExceedancesByFlightID)
-		protected.POST("/exceedances", exceedanceHandler.CreateExceedances)
-		protected.PUT("/exceedances/:id", exceedanceHandler.UpdateExceedance)
-		protected.DELETE("/exceedances/:id", exceedanceHandler.DeleteExceedance)
+		// CSV/Flight Data Routes
+		csvs := api.Group("/csv")
+		{
+			csvs.POST("", middleware.GatekeeperOrAbove(), csvHandler.UploadCSV)
+			csvs.GET("", middleware.AnyAuthenticatedUser(), csvHandler.GetCSVs)
+			csvs.GET("/:id", middleware.AnyAuthenticatedUser(), csvHandler.DownloadCSV)
+			csvs.DELETE("/:id", middleware.AdminOrFDA(), csvHandler.DeleteCSV)
+		}
+		api.GET("/flight/:id", middleware.AnyAuthenticatedUser(), csvHandler.GetCSVByID)
 
-		// Notification routes
-		protected.POST("/notifications", notificationHandler.CreateNotifications)
-		protected.GET("/notifications/user/:userId", notificationHandler.GetUserNotifications)
-		protected.PUT("/notifications/:id/read", notificationHandler.MarkNotificationAsRead)
-		protected.PUT("/notifications/user/:userId/mark-all-read", notificationHandler.MarkAllNotificationsAsRead)
+		// Event Management Routes
+		events := api.Group("/events")
+		{
+			events.GET("", middleware.AnyAuthenticatedUser(), eventHandler.GetEvents)
+			events.POST("", middleware.GatekeeperOrAbove(), eventHandler.CreateEvent)
+			events.GET("/:id", middleware.AnyAuthenticatedUser(), eventHandler.GetEventByID)
+			events.PUT("/:id", middleware.AdminOrFDA(), eventHandler.UpdateEvent) // Only FDA can validate
+			events.DELETE("/:id", middleware.AdminOrFDA(), eventHandler.DeleteEvent)
+		}
+
+		// Exceedance Routes
+		exceedances := api.Group("/exceedances")
+		{
+			exceedances.GET("", middleware.AnyAuthenticatedUser(), exceedanceHandler.GetExceedances)
+			exceedances.GET("/:id", middleware.AnyAuthenticatedUser(), exceedanceHandler.GetExceedanceByID)
+			exceedances.GET("/flight/:id", middleware.AnyAuthenticatedUser(), exceedanceHandler.GetExceedancesByFlightID)
+			exceedances.POST("", middleware.GatekeeperOrAbove(), exceedanceHandler.CreateExceedances)
+			exceedances.PUT("/:id", middleware.AdminOrFDA(), exceedanceHandler.UpdateExceedance)
+			exceedances.DELETE("/:id", middleware.AdminOrFDA(), exceedanceHandler.DeleteExceedance)
+		}
+
+		// Notification Routes
+		notifications := api.Group("/notifications")
+		{
+			notifications.POST("", middleware.GatekeeperOrAbove(), notificationHandler.CreateNotifications)
+			notifications.GET("/user/:userId", middleware.AnyAuthenticatedUser(), notificationHandler.GetUserNotifications)
+			notifications.PUT("/:id/read", middleware.AnyAuthenticatedUser(), notificationHandler.MarkNotificationAsRead)
+			notifications.PUT("/user/:userId/mark-all-read", middleware.AnyAuthenticatedUser(), notificationHandler.MarkAllNotificationsAsRead)
+		}
 	}
 
 	// Catch-all for unmatched routes (for debugging)
