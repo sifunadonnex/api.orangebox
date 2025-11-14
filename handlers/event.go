@@ -110,43 +110,61 @@ func (h *EventHandler) GetEvents(c *gin.Context) {
 		var event models.EventLog
 		var aircraft models.Aircraft
 		var company models.Company
-		var eventCreatedAtUnix, eventUpdatedAtUnix, aircraftCreatedAtUnix, aircraftUpdatedAtUnix, companyCreatedAtUnix, companyUpdatedAtUnix sql.NullInt64
+		var eventCreatedAtStr, eventUpdatedAtStr, aircraftCreatedAtStr, aircraftUpdatedAtStr, companyCreatedAtStr, companyUpdatedAtStr sql.NullString
 
 		err := rows.Scan(&event.ID, &event.EventName, &event.DisplayName, &event.EventCode,
 			&event.EventDescription, &event.EventParameter, &event.EventTrigger, &event.EventType,
 			&event.FlightPhase, &event.High, &event.High1, &event.High2, &event.Low,
-			&event.Low1, &event.Low2, &event.TriggerType, &event.DetectionPeriod, &event.Severities, &event.SOP, &event.AircraftID, &eventCreatedAtUnix, &eventUpdatedAtUnix,
+			&event.Low1, &event.Low2, &event.TriggerType, &event.DetectionPeriod, &event.Severities, &event.SOP, &event.AircraftID, &eventCreatedAtStr, &eventUpdatedAtStr,
 			&aircraft.ID, &aircraft.Airline, &aircraft.AircraftMake, &aircraft.ModelNumber,
-			&aircraft.SerialNumber, &aircraft.CompanyID, &aircraft.Parameters, &aircraftCreatedAtUnix, &aircraftUpdatedAtUnix,
-			&company.ID, &company.Name, &company.Email, &company.Phone, &company.Address, &company.Country, &company.Logo, &company.Status, &company.SubscriptionID, &companyCreatedAtUnix, &companyUpdatedAtUnix)
+			&aircraft.SerialNumber, &aircraft.CompanyID, &aircraft.Parameters, &aircraftCreatedAtStr, &aircraftUpdatedAtStr,
+			&company.ID, &company.Name, &company.Email, &company.Phone, &company.Address, &company.Country, &company.Logo, &company.Status, &company.SubscriptionID, &companyCreatedAtStr, &companyUpdatedAtStr)
 
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning event"})
 			return
 		}
 
-		// Handle nullable timestamps for event
-		if eventCreatedAtUnix.Valid {
-			event.CreatedAt = time.Unix(eventCreatedAtUnix.Int64/1000, 0)
+		// Handle nullable timestamps for event using parseTimestamp
+		if eventCreatedAtStr.Valid {
+			parsedTime, err := parseTimestamp(eventCreatedAtStr.String)
+			if err == nil {
+				event.CreatedAt = parsedTime
+			}
 		}
-		if eventUpdatedAtUnix.Valid {
-			event.UpdatedAt = time.Unix(eventUpdatedAtUnix.Int64/1000, 0)
-		}
-
-		// Handle nullable timestamps for aircraft
-		if aircraftCreatedAtUnix.Valid {
-			aircraft.CreatedAt = time.Unix(aircraftCreatedAtUnix.Int64/1000, 0)
-		}
-		if aircraftUpdatedAtUnix.Valid {
-			aircraft.UpdatedAt = time.Unix(aircraftUpdatedAtUnix.Int64/1000, 0)
+		if eventUpdatedAtStr.Valid {
+			parsedTime, err := parseTimestamp(eventUpdatedAtStr.String)
+			if err == nil {
+				event.UpdatedAt = parsedTime
+			}
 		}
 
-		// Handle nullable timestamps for company
-		if companyCreatedAtUnix.Valid {
-			company.CreatedAt = time.Unix(companyCreatedAtUnix.Int64/1000, 0)
+		// Handle nullable timestamps for aircraft using parseTimestamp
+		if aircraftCreatedAtStr.Valid {
+			parsedTime, err := parseTimestamp(aircraftCreatedAtStr.String)
+			if err == nil {
+				aircraft.CreatedAt = parsedTime
+			}
 		}
-		if companyUpdatedAtUnix.Valid {
-			company.UpdatedAt = time.Unix(companyUpdatedAtUnix.Int64/1000, 0)
+		if aircraftUpdatedAtStr.Valid {
+			parsedTime, err := parseTimestamp(aircraftUpdatedAtStr.String)
+			if err == nil {
+				aircraft.UpdatedAt = parsedTime
+			}
+		}
+
+		// Handle nullable timestamps for company using parseTimestamp
+		if companyCreatedAtStr.Valid {
+			parsedTime, err := parseTimestamp(companyCreatedAtStr.String)
+			if err == nil {
+				company.CreatedAt = parsedTime
+			}
+		}
+		if companyUpdatedAtStr.Valid {
+			parsedTime, err := parseTimestamp(companyUpdatedAtStr.String)
+			if err == nil {
+				company.UpdatedAt = parsedTime
+			}
 		}
 
 		// Attach company to aircraft
@@ -173,12 +191,12 @@ func (h *EventHandler) GetEventByID(c *gin.Context) {
 	query := `SELECT id, eventName, displayName, eventCode, eventDescription, eventParameter, eventTrigger, eventType, flightPhase, high, high1, high2, low, low1, low2, triggerType, detectionPeriod, severities, sop, aircraftId, createdAt, updatedAt FROM EventLog WHERE id = ?`
 
 	var event models.EventLog
-	var createdAtUnix, updatedAtUnix sql.NullInt64
+	var createdAtStr, updatedAtStr sql.NullString
 	row := h.db.QueryRow(query, id)
 	err := row.Scan(&event.ID, &event.EventName, &event.DisplayName, &event.EventCode,
 		&event.EventDescription, &event.EventParameter, &event.EventTrigger, &event.EventType,
 		&event.FlightPhase, &event.High, &event.High1, &event.High2, &event.Low,
-		&event.Low1, &event.Low2, &event.TriggerType, &event.DetectionPeriod, &event.Severities, &event.SOP, &event.AircraftID, &createdAtUnix, &updatedAtUnix)
+		&event.Low1, &event.Low2, &event.TriggerType, &event.DetectionPeriod, &event.Severities, &event.SOP, &event.AircraftID, &createdAtStr, &updatedAtStr)
 
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Event not found"})
@@ -189,11 +207,18 @@ func (h *EventHandler) GetEventByID(c *gin.Context) {
 		return
 	}
 
-	if createdAtUnix.Valid {
-		event.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
+	// Parse timestamps using the helper function
+	if createdAtStr.Valid {
+		parsedTime, err := parseTimestamp(createdAtStr.String)
+		if err == nil {
+			event.CreatedAt = parsedTime
+		}
 	}
-	if updatedAtUnix.Valid {
-		event.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
+	if updatedAtStr.Valid {
+		parsedTime, err := parseTimestamp(updatedAtStr.String)
+		if err == nil {
+			event.UpdatedAt = parsedTime
+		}
 	}
 
 	c.JSON(http.StatusOK, event)

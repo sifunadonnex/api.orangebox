@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fdm-backend/models"
 	"fmt"
+	"log"
 	"net/http"
 	"path/filepath"
 	"time"
@@ -54,9 +55,9 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 	query := `INSERT INTO Csv (id, name, file, aircraftId, departure, destination, flightHours, pilot, createdAt, updatedAt) 
 			  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	_, err = h.db.Exec(query, id, req.Name, filename, req.AircraftID, req.Departure, req.Destination, req.FlightHours, req.Pilot, now.UnixMilli(), now.UnixMilli())
+	_, err = h.db.Exec(query, id, req.Name, filename, req.AircraftID, req.Departure, req.Destination, req.FlightHours, req.Pilot, now, now)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error saving CSV record"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error saving CSV record", "details": err.Error()})
 		return
 	}
 
@@ -97,49 +98,68 @@ func (h *CSVHandler) GetCSVs(c *gin.Context) {
 		var csv models.CSV
 		var aircraft models.Aircraft
 		var company models.Company
-		var createdAtUnix, updatedAtUnix sql.NullInt64
+		var createdAtStr, updatedAtStr sql.NullString
 		var aircraftID sql.NullString
-		var aircraftCreatedAt, aircraftUpdatedAt sql.NullTime
+		var aircraftCreatedAtStr, aircraftUpdatedAtStr sql.NullString
 		var companyID sql.NullString
-		var companyCreatedAt, companyUpdatedAt sql.NullTime
+		var companyCreatedAtStr, companyUpdatedAtStr sql.NullString
 
 		err := rows.Scan(&csv.ID, &csv.Name, &csv.File, &csv.Status, &csv.Departure, &csv.Pilot,
-			&csv.Destination, &csv.FlightHours, &csv.AircraftID, &createdAtUnix, &updatedAtUnix,
+			&csv.Destination, &csv.FlightHours, &csv.AircraftID, &createdAtStr, &updatedAtStr,
 			&aircraftID, &aircraft.Airline, &aircraft.AircraftMake, &aircraft.ModelNumber,
-			&aircraft.SerialNumber, &aircraft.Registration, &aircraft.CompanyID, &aircraft.Parameters, &aircraftCreatedAt, &aircraftUpdatedAt,
-			&companyID, &company.Name, &company.Email, &company.Phone, &company.Address, &company.Country, &company.Logo, &company.Status, &company.SubscriptionID, &companyCreatedAt, &companyUpdatedAt)
+			&aircraft.SerialNumber, &aircraft.Registration, &aircraft.CompanyID, &aircraft.Parameters, &aircraftCreatedAtStr, &aircraftUpdatedAtStr,
+			&companyID, &company.Name, &company.Email, &company.Phone, &company.Address, &company.Country, &company.Logo, &company.Status, &company.SubscriptionID, &companyCreatedAtStr, &companyUpdatedAtStr)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning CSV"})
 			return
 		}
 
-		if createdAtUnix.Valid {
-			csv.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
+		// Parse CSV timestamps
+		if createdAtStr.Valid {
+			parsedTime, err := parseTimestamp(createdAtStr.String)
+			if err == nil {
+				csv.CreatedAt = parsedTime
+			}
 		}
-		if updatedAtUnix.Valid {
-			csv.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
+		if updatedAtStr.Valid {
+			parsedTime, err := parseTimestamp(updatedAtStr.String)
+			if err == nil {
+				csv.UpdatedAt = parsedTime
+			}
 		}
 
 		// Handle aircraft
 		var aircraftPtr *models.Aircraft
 		if aircraftID.Valid {
 			aircraft.ID = aircraftID.String
-			if aircraftCreatedAt.Valid {
-				aircraft.CreatedAt = aircraftCreatedAt.Time
+			if aircraftCreatedAtStr.Valid {
+				parsedTime, err := parseTimestamp(aircraftCreatedAtStr.String)
+				if err == nil {
+					aircraft.CreatedAt = parsedTime
+				}
 			}
-			if aircraftUpdatedAt.Valid {
-				aircraft.UpdatedAt = aircraftUpdatedAt.Time
+			if aircraftUpdatedAtStr.Valid {
+				parsedTime, err := parseTimestamp(aircraftUpdatedAtStr.String)
+				if err == nil {
+					aircraft.UpdatedAt = parsedTime
+				}
 			}
 
 			// Handle company
 			var companyPtr *models.Company
 			if companyID.Valid {
 				company.ID = companyID.String
-				if companyCreatedAt.Valid {
-					company.CreatedAt = companyCreatedAt.Time
+				if companyCreatedAtStr.Valid {
+					parsedTime, err := parseTimestamp(companyCreatedAtStr.String)
+					if err == nil {
+						company.CreatedAt = parsedTime
+					}
 				}
-				if companyUpdatedAt.Valid {
-					company.UpdatedAt = companyUpdatedAt.Time
+				if companyUpdatedAtStr.Valid {
+					parsedTime, err := parseTimestamp(companyUpdatedAtStr.String)
+					if err == nil {
+						company.UpdatedAt = parsedTime
+					}
 				}
 				companyPtr = &company
 			}
@@ -192,34 +212,33 @@ func (h *CSVHandler) GetCSVByID(c *gin.Context) {
 	query := `SELECT id, name, file, status, departure, pilot, destination, flightHours, aircraftId, createdAt, updatedAt FROM Csv WHERE id = ?`
 
 	var csv models.CSV
-	var createdAtUnix, updatedAtUnix sql.NullInt64
+	var createdAtStr, updatedAtStr sql.NullString
 	row := h.db.QueryRow(query, id)
 	err := row.Scan(&csv.ID, &csv.Name, &csv.File, &csv.Status, &csv.Departure, &csv.Pilot,
-		&csv.Destination, &csv.FlightHours, &csv.AircraftID, &createdAtUnix, &updatedAtUnix)
+		&csv.Destination, &csv.FlightHours, &csv.AircraftID, &createdAtStr, &updatedAtStr)
 
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "CSV not found"})
 		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+			log.Printf("Error scanning CSV record: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error", "details": err.Error()})
 		}
 		return
 	}
 
-	if createdAtUnix.Valid {
-		csv.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
+	// Parse timestamps using the helper function
+	if createdAtStr.Valid {
+		parsedTime, err := parseTimestamp(createdAtStr.String)
+		if err == nil {
+			csv.CreatedAt = parsedTime
+		}
 	}
-	if updatedAtUnix.Valid {
-		csv.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
-	}
-
-	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "CSV not found"})
-		return
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
-		return
+	if updatedAtStr.Valid {
+		parsedTime, err := parseTimestamp(updatedAtStr.String)
+		if err == nil {
+			csv.UpdatedAt = parsedTime
+		}
 	}
 
 	c.JSON(http.StatusOK, csv)
@@ -257,21 +276,28 @@ func (h *CSVHandler) getCSVExceedances(csvID string) ([]models.Exceedance, error
 	var exceedances []models.Exceedance
 	for rows.Next() {
 		var exceedance models.Exceedance
-		var createdAtUnix, updatedAtUnix sql.NullInt64
+		var createdAtStr, updatedAtStr sql.NullString
 
 		err := rows.Scan(&exceedance.ID, &exceedance.ExceedanceValues, &exceedance.FlightPhase,
 			&exceedance.ParameterName, &exceedance.Description, &exceedance.EventStatus,
 			&exceedance.AircraftID, &exceedance.FlightID, &exceedance.File, &exceedance.EventID,
-			&exceedance.Comment, &exceedance.ExceedanceLevel, &createdAtUnix, &updatedAtUnix)
+			&exceedance.Comment, &exceedance.ExceedanceLevel, &createdAtStr, &updatedAtStr)
 		if err != nil {
 			continue
 		}
 
-		if createdAtUnix.Valid {
-			exceedance.CreatedAt = time.Unix(createdAtUnix.Int64/1000, 0)
+		// Parse timestamps
+		if createdAtStr.Valid {
+			parsedTime, err := parseTimestamp(createdAtStr.String)
+			if err == nil {
+				exceedance.CreatedAt = parsedTime
+			}
 		}
-		if updatedAtUnix.Valid {
-			exceedance.UpdatedAt = time.Unix(updatedAtUnix.Int64/1000, 0)
+		if updatedAtStr.Valid {
+			parsedTime, err := parseTimestamp(updatedAtStr.String)
+			if err == nil {
+				exceedance.UpdatedAt = parsedTime
+			}
 		}
 
 		exceedances = append(exceedances, exceedance)

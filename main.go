@@ -135,7 +135,8 @@ func main() {
 		{
 			aircrafts.GET("", middleware.AnyAuthenticatedUser(), aircraftHandler.GetAircrafts)
 			aircrafts.POST("", middleware.GatekeeperOrAbove(), aircraftHandler.CreateAircraft)
-			aircrafts.GET("/:id", middleware.AnyAuthenticatedUser(), aircraftHandler.GetAircraftsByUserID)
+			aircrafts.GET("/company/:id", middleware.AnyAuthenticatedUser(), aircraftHandler.GetAircraftsByUserID)
+			aircrafts.GET("/:id", middleware.AnyAuthenticatedUser(), aircraftHandler.GetAircraftByID)
 			aircrafts.PUT("/:id", middleware.GatekeeperOrAbove(), aircraftHandler.UpdateAircraft)
 			aircrafts.DELETE("/:id", middleware.AdminOrFDA(), aircraftHandler.DeleteAircraft)
 		}

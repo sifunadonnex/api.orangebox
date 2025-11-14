@@ -166,28 +166,32 @@ func (h *UserHandler) Login(c *gin.Context) {
 	})
 }
 
-// GetUsers retrieves all users
+// GetUsers retrieves all users with their company information
 func (h *UserHandler) GetUsers(c *gin.Context) {
 	// Get requesting user's role and company
 	userRole, _ := c.Get("userRole")
 	userCompanyID, companyExists := c.Get("userCompanyId")
 
 	query := `
-		SELECT id, email, role, fullName, designation, department, username, image, 
-		       phone, isActive, companyId, lastLoginAt, createdAt, updatedAt 
-		FROM User
+		SELECT 
+			u.id, u.email, u.role, u.fullName, u.designation, u.department, u.username, u.image, 
+			u.phone, u.isActive, u.companyId, u.lastLoginAt, u.createdAt, u.updatedAt,
+			c.id, c.name, c.email, c.phone, c.address, c.country, 
+			c.logo, c.status, c.subscriptionId, c.createdAt, c.updatedAt
+		FROM User u
+		LEFT JOIN Company c ON u.companyId = c.id
 	`
 	args := []interface{}{}
 
 	// Non-admin users can only see users from their company
 	if userRole != models.RoleAdmin && userRole != models.RoleFDA {
 		if companyExists {
-			query += " WHERE companyId = ?"
+			query += " WHERE u.companyId = ?"
 			args = append(args, userCompanyID)
 		}
 	}
 
-	query += " ORDER BY createdAt DESC"
+	query += " ORDER BY u.createdAt DESC"
 
 	rows, err := h.db.Query(query, args...)
 	if err != nil {
@@ -202,17 +206,24 @@ func (h *UserHandler) GetUsers(c *gin.Context) {
 		var fullName, designation, department, username, image, phone, companyID sql.NullString
 		var lastLoginAt sql.NullTime
 
+		// Company fields
+		var cID, cName, cEmail, cPhone, cAddress, cCountry sql.NullString
+		var cLogo, cStatus, cSubscriptionID sql.NullString
+		var cCreatedAt, cUpdatedAt sql.NullTime
+
 		err := rows.Scan(
 			&user.ID, &user.Email, &user.Role, &fullName, &designation,
 			&department, &username, &image, &phone, &user.IsActive,
 			&companyID, &lastLoginAt, &user.CreatedAt, &user.UpdatedAt,
+			&cID, &cName, &cEmail, &cPhone, &cAddress, &cCountry,
+			&cLogo, &cStatus, &cSubscriptionID, &cCreatedAt, &cUpdatedAt,
 		)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning user"})
 			return
 		}
 
-		// Map nullable fields
+		// Map nullable user fields
 		if fullName.Valid {
 			user.FullName = &fullName.String
 		}
@@ -236,6 +247,38 @@ func (h *UserHandler) GetUsers(c *gin.Context) {
 		}
 		if lastLoginAt.Valid {
 			user.LastLoginAt = &lastLoginAt.Time
+		}
+
+		// Map company if exists
+		if cID.Valid {
+			company := &models.Company{
+				ID:     cID.String,
+				Name:   cName.String,
+				Email:  cEmail.String,
+				Status: cStatus.String,
+			}
+			if cPhone.Valid {
+				company.Phone = &cPhone.String
+			}
+			if cAddress.Valid {
+				company.Address = &cAddress.String
+			}
+			if cCountry.Valid {
+				company.Country = &cCountry.String
+			}
+			if cLogo.Valid {
+				company.Logo = &cLogo.String
+			}
+			if cSubscriptionID.Valid {
+				company.SubscriptionID = &cSubscriptionID.String
+			}
+			if cCreatedAt.Valid {
+				company.CreatedAt = cCreatedAt.Time
+			}
+			if cUpdatedAt.Valid {
+				company.UpdatedAt = cUpdatedAt.Time
+			}
+			user.Company = company
 		}
 
 		users = append(users, user)
@@ -611,6 +654,18 @@ func (h *UserHandler) getUserByID(id string) (*models.User, error) {
 	}
 	if companyID.Valid {
 		user.CompanyID = &companyID.String
+
+		// Fetch company if companyID exists
+		if companyID.String != "" {
+			var company models.Company
+			companyQuery := `SELECT id, name, createdAt, updatedAt FROM Company WHERE id = ?`
+			err := h.db.QueryRow(companyQuery, companyID.String).Scan(
+				&company.ID, &company.Name, &company.CreatedAt, &company.UpdatedAt,
+			)
+			if err == nil {
+				user.Company = &company
+			}
+		}
 	}
 	if lastLoginAt.Valid {
 		user.LastLoginAt = &lastLoginAt.Time
@@ -661,6 +716,18 @@ func (h *UserHandler) getUserByEmail(email string) (*models.User, error) {
 	}
 	if companyID.Valid {
 		user.CompanyID = &companyID.String
+
+		// Fetch company if companyID exists
+		if companyID.String != "" {
+			var company models.Company
+			companyQuery := `SELECT id, name, createdAt, updatedAt FROM Company WHERE id = ?`
+			err := h.db.QueryRow(companyQuery, companyID.String).Scan(
+				&company.ID, &company.Name, &company.CreatedAt, &company.UpdatedAt,
+			)
+			if err == nil {
+				user.Company = &company
+			}
+		}
 	}
 	if lastLoginAt.Valid {
 		user.LastLoginAt = &lastLoginAt.Time
