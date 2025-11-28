@@ -3,6 +3,7 @@ package handlers
 import (
 	"database/sql"
 	"fdm-backend/models"
+	"log"
 	"net/http"
 	"time"
 
@@ -20,11 +21,11 @@ func NewExceedanceHandler(db *sql.DB) *ExceedanceHandler {
 
 // GetExceedances retrieves all exceedances with related data
 func (h *ExceedanceHandler) GetExceedances(c *gin.Context) {
-	query := `SELECT e.id, e.exceedanceValues, e.flightPhase, e.parameterName, e.description, e.eventStatus, e.aircraftId, e.flightId, e.file, e.eventId, e.comment, e.exceedanceLevel, e.createdAt, e.updatedAt,
-			  el.id as eventlog_id, el.eventName, el.displayName, el.eventCode, el.eventDescription, el.eventParameter, el.eventTrigger, el.eventType, el.flightPhase as eventlog_flightPhase, el.high, el.high1, el.high2, el.low, el.low1, el.low2, el.triggerType, el.detectionPeriod, el.severities, el.sop, el.aircraftId as eventlog_aircraftId, el.createdAt as eventlog_createdAt, el.updatedAt as eventlog_updatedAt,
-			  c.id as csv_id, c.name, c.file as csv_file, c.status, c.departure, c.pilot, c.destination, c.flightHours, c.aircraftId as csv_aircraftId, c.createdAt as csv_createdAt, c.updatedAt as csv_updatedAt,
-			  a.id as aircraft_id, a.airline, a.aircraftMake, a.modelNumber, a.serialNumber, a.companyId, a.parameters, a.createdAt as aircraft_createdAt, a.updatedAt as aircraft_updatedAt,
-			  co.id as company_id, co.name as company_name, co.email as company_email, co.phone as company_phone, co.address as company_address, co.country as company_country, co.logo as company_logo, co.status as company_status, co.subscriptionId as company_subscriptionId, co.createdAt as company_createdAt, co.updatedAt as company_updatedAt
+	query := `SELECT e.id, COALESCE(e.exceedanceValues, '') as exceedanceValues, COALESCE(e.flightPhase, '') as flightPhase, COALESCE(e.parameterName, '') as parameterName, COALESCE(e.description, '') as description, COALESCE(e.eventStatus, '') as eventStatus, COALESCE(e.aircraftId, '') as aircraftId, COALESCE(e.flightId, '') as flightId, e.file, e.eventId, e.comment, e.exceedanceLevel, e.createdAt, e.updatedAt,
+			  el.id as eventlog_id, el.eventName, COALESCE(el.displayName, '') as displayName, COALESCE(el.eventCode, '') as eventCode, COALESCE(el.eventDescription, '') as eventDescription, COALESCE(el.eventParameter, '') as eventParameter, COALESCE(el.eventTrigger, '') as eventTrigger, COALESCE(el.eventType, '') as eventType, COALESCE(el.flightPhase, '') as eventlog_flightPhase, el.high, el.high1, el.high2, el.low, el.low1, el.low2, el.triggerType, el.detectionPeriod, el.severities, COALESCE(el.sop, '') as sop, COALESCE(el.aircraftId, '') as eventlog_aircraftId, el.createdAt as eventlog_createdAt, el.updatedAt as eventlog_updatedAt,
+			  c.id as csv_id, COALESCE(c.name, '') as name, COALESCE(c.file, '') as csv_file, c.status, c.departure, c.pilot, c.destination, c.flightHours, COALESCE(c.aircraftId, '') as csv_aircraftId, c.createdAt as csv_createdAt, c.updatedAt as csv_updatedAt,
+			  a.id as aircraft_id, COALESCE(a.airline, '') as airline, COALESCE(a.aircraftMake, '') as aircraftMake, a.modelNumber, COALESCE(a.serialNumber, '') as serialNumber, COALESCE(a.companyId, '') as companyId, a.parameters, a.createdAt as aircraft_createdAt, a.updatedAt as aircraft_updatedAt,
+			  co.id as company_id, COALESCE(co.name, '') as company_name, COALESCE(co.email, '') as company_email, co.phone as company_phone, co.address as company_address, co.country as company_country, co.logo as company_logo, COALESCE(co.status, '') as company_status, co.subscriptionId as company_subscriptionId, co.createdAt as company_createdAt, co.updatedAt as company_updatedAt
 			  FROM Exceedance e 
 			  LEFT JOIN EventLog el ON e.eventId = el.id 
 			  LEFT JOIN Csv c ON e.flightId = c.id 
@@ -48,12 +49,12 @@ func (h *ExceedanceHandler) GetExceedances(c *gin.Context) {
 
 		// Nullable fields for joins
 		var eventLogID sql.NullString
-		var eventLogCreatedAt, eventLogUpdatedAt sql.NullTime
+		var eventLogCreatedAt, eventLogUpdatedAt sql.NullInt64
 		var csvID sql.NullString
 		var csvCreatedAt, csvUpdatedAt sql.NullTime
 		var aircraftID sql.NullString
-		var aircraftCreatedAt, aircraftUpdatedAt sql.NullTime
-		var exceedanceCreatedAt, exceedanceUpdatedAt sql.NullTime
+		var aircraftCreatedAt, aircraftUpdatedAt sql.NullInt64
+		var exceedanceCreatedAt, exceedanceUpdatedAt sql.NullInt64
 		var companyID sql.NullString
 		var companyCreatedAt, companyUpdatedAt sql.NullTime
 
@@ -72,16 +73,17 @@ func (h *ExceedanceHandler) GetExceedances(c *gin.Context) {
 			&companyID, &company.Name, &company.Email, &company.Phone, &company.Address, &company.Country, &company.Logo, &company.Status, &company.SubscriptionID, &companyCreatedAt, &companyUpdatedAt)
 
 		if err != nil {
+			log.Println("Error scanning exceedance:", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning exceedance"})
 			return
 		}
 
 		// Handle exceedance timestamps
 		if exceedanceCreatedAt.Valid {
-			exceedance.CreatedAt = exceedanceCreatedAt.Time
+			exceedance.CreatedAt = time.UnixMilli(exceedanceCreatedAt.Int64)
 		}
 		if exceedanceUpdatedAt.Valid {
-			exceedance.UpdatedAt = exceedanceUpdatedAt.Time
+			exceedance.UpdatedAt = time.UnixMilli(exceedanceUpdatedAt.Int64)
 		}
 
 		// Handle nullable eventlog
@@ -89,10 +91,10 @@ func (h *ExceedanceHandler) GetExceedances(c *gin.Context) {
 		if eventLogID.Valid {
 			eventLog.ID = eventLogID.String
 			if eventLogCreatedAt.Valid {
-				eventLog.CreatedAt = eventLogCreatedAt.Time
+				eventLog.CreatedAt = time.UnixMilli(eventLogCreatedAt.Int64)
 			}
 			if eventLogUpdatedAt.Valid {
-				eventLog.UpdatedAt = eventLogUpdatedAt.Time
+				eventLog.UpdatedAt = time.UnixMilli(eventLogUpdatedAt.Int64)
 			}
 			eventLogPtr = &eventLog
 		}
@@ -112,10 +114,10 @@ func (h *ExceedanceHandler) GetExceedances(c *gin.Context) {
 		if aircraftID.Valid {
 			aircraft.ID = aircraftID.String
 			if aircraftCreatedAt.Valid {
-				aircraft.CreatedAt = aircraftCreatedAt.Time
+				aircraft.CreatedAt = time.UnixMilli(aircraftCreatedAt.Int64)
 			}
 			if aircraftUpdatedAt.Valid {
-				aircraft.UpdatedAt = aircraftUpdatedAt.Time
+				aircraft.UpdatedAt = time.UnixMilli(aircraftUpdatedAt.Int64)
 			}
 		}
 
@@ -159,11 +161,11 @@ func (h *ExceedanceHandler) GetExceedances(c *gin.Context) {
 func (h *ExceedanceHandler) GetExceedanceByID(c *gin.Context) {
 	id := c.Param("id")
 
-	query := `SELECT e.id, e.exceedanceValues, e.flightPhase, e.parameterName, e.description, e.eventStatus, e.aircraftId, e.flightId, e.file, e.eventId, e.comment, e.exceedanceLevel, e.createdAt, e.updatedAt,
-			  el.id as eventlog_id, el.eventName, el.displayName, el.eventCode, el.eventDescription, el.eventParameter, el.eventTrigger, el.eventType, el.flightPhase as eventlog_flightPhase, el.high, el.high1, el.high2, el.low, el.low1, el.low2, el.triggerType, el.detectionPeriod, el.severities, el.sop, el.aircraftId as eventlog_aircraftId, el.createdAt as eventlog_createdAt, el.updatedAt as eventlog_updatedAt,
-			  c.id as csv_id, c.name, c.file as csv_file, c.status, c.departure, c.pilot, c.destination, c.flightHours, c.aircraftId as csv_aircraftId, c.createdAt as csv_createdAt, c.updatedAt as csv_updatedAt,
-			  a.id as aircraft_id, a.airline, a.aircraftMake, a.modelNumber, a.serialNumber, a.companyId, a.parameters, a.createdAt as aircraft_createdAt, a.updatedAt as aircraft_updatedAt,
-			  co.id as company_id, co.name as company_name, co.email as company_email, co.phone as company_phone, co.address as company_address, co.country as company_country, co.logo as company_logo, co.status as company_status, co.subscriptionId as company_subscriptionId, co.createdAt as company_createdAt, co.updatedAt as company_updatedAt
+	query := `SELECT e.id, COALESCE(e.exceedanceValues, '') as exceedanceValues, COALESCE(e.flightPhase, '') as flightPhase, COALESCE(e.parameterName, '') as parameterName, COALESCE(e.description, '') as description, COALESCE(e.eventStatus, '') as eventStatus, COALESCE(e.aircraftId, '') as aircraftId, COALESCE(e.flightId, '') as flightId, e.file, e.eventId, e.comment, e.exceedanceLevel, e.createdAt, e.updatedAt,
+			  el.id as eventlog_id, el.eventName, COALESCE(el.displayName, '') as displayName, COALESCE(el.eventCode, '') as eventCode, COALESCE(el.eventDescription, '') as eventDescription, COALESCE(el.eventParameter, '') as eventParameter, COALESCE(el.eventTrigger, '') as eventTrigger, COALESCE(el.eventType, '') as eventType, COALESCE(el.flightPhase, '') as eventlog_flightPhase, el.high, el.high1, el.high2, el.low, el.low1, el.low2, el.triggerType, el.detectionPeriod, el.severities, COALESCE(el.sop, '') as sop, COALESCE(el.aircraftId, '') as eventlog_aircraftId, el.createdAt as eventlog_createdAt, el.updatedAt as eventlog_updatedAt,
+			  c.id as csv_id, COALESCE(c.name, '') as name, COALESCE(c.file, '') as csv_file, c.status, c.departure, c.pilot, c.destination, c.flightHours, COALESCE(c.aircraftId, '') as csv_aircraftId, c.createdAt as csv_createdAt, c.updatedAt as csv_updatedAt,
+			  a.id as aircraft_id, COALESCE(a.airline, '') as airline, COALESCE(a.aircraftMake, '') as aircraftMake, a.modelNumber, COALESCE(a.serialNumber, '') as serialNumber, COALESCE(a.companyId, '') as companyId, a.parameters, a.createdAt as aircraft_createdAt, a.updatedAt as aircraft_updatedAt,
+			  co.id as company_id, COALESCE(co.name, '') as company_name, COALESCE(co.email, '') as company_email, co.phone as company_phone, co.address as company_address, co.country as company_country, co.logo as company_logo, COALESCE(co.status, '') as company_status, co.subscriptionId as company_subscriptionId, co.createdAt as company_createdAt, co.updatedAt as company_updatedAt
 			  FROM Exceedance e 
 			  LEFT JOIN EventLog el ON e.eventId = el.id 
 			  LEFT JOIN Csv c ON e.flightId = c.id 
@@ -208,6 +210,7 @@ func (h *ExceedanceHandler) GetExceedanceByID(c *gin.Context) {
 		return
 	}
 	if err != nil {
+		log.Println("Error scanning exceedance:", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
 	}
