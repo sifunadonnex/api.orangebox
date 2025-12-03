@@ -130,6 +130,11 @@ func main() {
 			users.GET("/company/:companyId", middleware.GatekeeperOrAbove(), userHandler.GetUsersByCompanyID)
 		}
 
+		// Session Management Routes - Single Device Login Enforcement
+		api.POST("/logout", userHandler.Logout)
+		api.POST("/logout-all", userHandler.LogoutAllDevices)
+		api.GET("/sessions", userHandler.GetActiveSessions)
+
 		// Aircraft Management Routes (Company-scoped)
 		aircrafts := api.Group("/aircrafts")
 		{

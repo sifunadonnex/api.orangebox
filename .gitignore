@@ -8,23 +8,32 @@
 # Test binary, built with `go test -c`
 *.test
 
-# Output of the go coverage tool, specifically when used with LiteIDE
+# Output of the go coverage tool
 *.out
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
+# Dependency directories
+vendor/
 
 # Go workspace file
 go.work
+go.work.sum
 
 # Environment variables
 .env
-.env.local
+.env.*
+!.env.example
+
+# Database files
+{% comment %} *.db
+*.db-journal
+*.sqlite
+*.sqlite3 {% endcomment %}
 
 # Logs
 *.log
+logs/
 
-# CSV upload files (keep directory but ignore contents)
+# CSV upload files (keep directory structure)
 #csvs/*
 !csvs/.gitkeep
 
@@ -33,6 +42,7 @@ go.work
 .idea/
 *.swp
 *.swo
+*~
 
 # OS generated files
 .DS_Store
@@ -46,6 +56,13 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+tmp/
+temp/
 
-# Legacy Node.js files (if any remain)
-node_modules
+# Build artifacts
+build/
+dist/
+.dist/
+
+# Legacy files
+node_modules/

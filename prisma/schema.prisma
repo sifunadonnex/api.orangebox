@@ -67,6 +67,21 @@ model User {
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
   notifications   Notification[]
+  sessions        Session[]     // User's active sessions for single-device login
+}
+
+// Session model for single-device login enforcement
+model Session {
+  id              String        @id @default(cuid())
+  userId          String
+  token           String        @unique
+  deviceInfo      String?       // User-Agent info
+  ipAddress       String?       // Client IP address
+  isActive        Boolean       @default(true)
+  expiresAt       DateTime
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 }
 
 model Csv {

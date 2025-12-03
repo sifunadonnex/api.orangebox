@@ -7,14 +7,15 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// GenerateJWT generates a JWT token for a user
-func GenerateJWT(userID, email, role string, companyID *string) (string, error) {
+// GenerateJWT generates a JWT token for a user with session ID for single-device enforcement
+func GenerateJWT(userID, email, role string, companyID *string, sessionID string) (string, error) {
 	claims := jwt.MapClaims{
-		"userId": userID,
-		"email":  email,
-		"role":   role,
-		"exp":    time.Now().Add(time.Hour * 24 * 7).Unix(), // 7 days expiry
-		"iat":    time.Now().Unix(),
+		"userId":    userID,
+		"email":     email,
+		"role":      role,
+		"sessionId": sessionID, // Session ID for single-device login enforcement
+		"exp":       time.Now().Add(time.Hour * 24 * 7).Unix(), // 7 days expiry
+		"iat":       time.Now().Unix(),
 	}
 
 	if companyID != nil {

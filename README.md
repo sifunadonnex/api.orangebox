@@ -1,139 +1,166 @@
-# FDM API - Go Version
+# FDM API - Flight Data Monitoring Backend
 
-Flight Data Monitoring (FDM) Backend API built with Go, Gin web framework, and SQLite database.
+Production-ready Flight Data Monitoring (FDM) Backend API built with Go, Gin framework, and SQLite/PostgreSQL.
 
 ## Features
 
-- User authentication with bcrypt password hashing
-- Aircraft management
-- CSV file upload and management
-- Event logging and management
-- Exceedance tracking and reporting
-- RESTful API endpoints
-- CORS support for frontend integration
+- 🔐 **JWT Authentication** with session management
+- 👤 **Single Device Login** - Prevents credential sharing
+- 🏢 **Multi-tenant** - Company-based data isolation
+- ✈️ **Aircraft Management** - Fleet tracking
+- 📊 **Flight Data Analysis** - CSV upload and processing
+- ⚠️ **Exceedance Tracking** - Event monitoring and alerts
+- 🔔 **Notifications** - Real-time alert system
+- 📦 **Subscription Management** - Plan-based access control
 
-## Technologies Used
+## Tech Stack
 
 - **Go 1.21+** - Programming language
-- **Gin** - Web framework
-- **SQLite** - Database (using existing Prisma database)
+- **Gin** - High-performance web framework
+- **SQLite/PostgreSQL** - Database
+- **JWT** - Token-based authentication
 - **bcrypt** - Password hashing
-- **UUID** - Unique identifier generation
+
+## Quick Start
+
+### Prerequisites
+- Go 1.21 or higher
+- Git
+
+### Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/sifunadonnex/api.orangebox.git
+cd api.orangebox
+
+# Copy environment file
+cp .env.example .env
+
+# Edit .env with your configuration
+# - Set ACCESS_TOKEN_SECRET to a secure random string
+# - Configure DATABASE_URL for your database
+
+# Install dependencies
+go mod tidy
+
+# Run the application
+go run .
+```
+
+The server starts on `http://localhost:8000`
+
+### Production Build
+
+```bash
+# Build for Linux
+GOOS=linux GOARCH=amd64 go build -o api-server .
+
+# Build for Windows
+GOOS=windows GOARCH=amd64 go build -o api-server.exe .
+
+# Run in production mode
+GIN_MODE=release ./api-server
+```
 
 ## API Endpoints
 
 ### Authentication
-- `POST /login` - User login
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/login` | User login (returns JWT token) |
+| POST | `/api/logout` | Logout current session |
+| POST | `/api/logout-all` | Logout from all devices |
+| GET | `/api/sessions` | View active sessions |
 
 ### Users
-- `GET /users` - Get all users
-- `POST /users` - Create new user
-- `PUT /users/:id` - Update user
-- `GET /users/:id` - Get user by ID
-- `GET /users/gate/:id` - Get users by gate ID
-- `GET /user/:id` - Get user by email
-- `DELETE /users/:id` - Delete user
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/users` | List all users |
+| POST | `/api/users` | Create user |
+| GET | `/api/users/:id` | Get user by ID |
+| PUT | `/api/users/:id` | Update user |
+| DELETE | `/api/users/:id` | Delete user |
+
+### Companies
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/companies` | List companies |
+| POST | `/api/companies` | Create company |
+| PUT | `/api/companies/:id` | Update company |
+| DELETE | `/api/companies/:id` | Delete company |
 
 ### Aircraft
-- `GET /aircrafts` - Get all aircraft
-- `GET /aircrafts/:id` - Get aircraft by user ID
-- `POST /aircrafts` - Create new aircraft
-- `PUT /aircrafts/:id` - Update aircraft
-- `DELETE /aircrafts/:id` - Delete aircraft
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/aircrafts` | List aircraft |
+| POST | `/api/aircrafts` | Create aircraft |
+| GET | `/api/aircrafts/:id` | Get aircraft |
+| PUT | `/api/aircrafts/:id` | Update aircraft |
+| DELETE | `/api/aircrafts/:id` | Delete aircraft |
 
-### CSV Files
-- `POST /csv` - Upload CSV file
-- `GET /csv` - Get all CSV files
-- `GET /csv/:id` - Download CSV file
-- `GET /flight/:id` - Get CSV by ID
-- `DELETE /csv/:id` - Delete CSV
+### Flight Data (CSV)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/csv` | Upload flight data |
+| GET | `/api/csv` | List all flights |
+| GET | `/api/csv/:id` | Download CSV |
+| DELETE | `/api/csv/:id` | Delete flight |
 
-### Events
-- `POST /events` - Create new event
-- `GET /events` - Get all events
-- `GET /events/:id` - Get event by ID
-- `PUT /events/:id` - Update event
-- `DELETE /events/:id` - Delete event
+### Events & Exceedances
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/events` | List events |
+| POST | `/api/events` | Create event |
+| GET | `/api/exceedances` | List exceedances |
+| POST | `/api/exceedances` | Create exceedances |
 
-### Exceedances
-- `GET /exceedances` - Get all exceedances
-- `GET /exceedances/:id` - Get exceedance by ID
-- `GET /exceedances/flight/:id` - Get exceedances by flight ID
-- `POST /exceedances` - Create exceedances
-- `PUT /exceedances/:id` - Update exceedance
-- `DELETE /exceedances/:id` - Delete exceedance
-
-## Installation and Setup
-
-1. **Install Go** (version 1.21 or higher)
-
-2. **Initialize Go modules and install dependencies:**
-   ```bash
-   go mod tidy
-   ```
-
-3. **Ensure the Prisma database exists:**
-   The application uses the existing SQLite database at `prisma/dev.db`
-
-4. **Run the application:**
-   ```bash
-   go run main.go
-   ```
-
-5. **The server will start on:** `https://api-orangebox.onrender.com`
+### Notifications
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/notifications/user/:userId` | Get user notifications |
+| PUT | `/api/notifications/:id/read` | Mark as read |
 
 ## Environment Variables
 
-- `PORT` - Server port (default: 8000)
-- `BEARER_TOKEN` - Authentication bearer token (default: a6bca59a8855b4)
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ACCESS_TOKEN_SECRET` | JWT signing secret | Required |
+| `DATABASE_URL` | Database connection string | `file:./prisma/dev.db` |
+| `PORT` | Server port | `8000` |
+| `GIN_MODE` | Gin mode (debug/release) | `debug` |
 
 ## Project Structure
 
 ```
-├── main.go              # Application entry point
-├── go.mod              # Go module file
-├── config/             # Configuration files
-│   └── config.go       # Environment configuration
-├── database/           # Database connection
-│   └── database.go     # Database initialization
-├── handlers/           # HTTP request handlers
-│   ├── user.go         # User-related endpoints
-│   ├── aircraft.go     # Aircraft-related endpoints
-│   ├── csv.go          # CSV file-related endpoints
-│   ├── event.go        # Event-related endpoints
-│   └── exceedance.go   # Exceedance-related endpoints
-├── middleware/         # HTTP middleware
-│   └── auth.go         # Authentication middleware
-├── models/             # Data models and DTOs
-│   └── models.go       # All data structures
-├── prisma/             # Database files (from previous Node.js setup)
-│   ├── dev.db          # SQLite database
-│   └── schema.prisma   # Database schema
-├── csvs/               # CSV file uploads directory
-└── public/             # Static files
-    └── index.html      # Default HTML page
+├── main.go                 # Application entry point
+├── config/                 # Configuration
+├── database/               # Database connection & migrations
+├── handlers/               # HTTP request handlers
+├── middleware/             # Authentication & authorization
+├── models/                 # Data models
+├── utils/                  # Utility functions (JWT, etc.)
+├── prisma/                 # Database schema
+└── csvs/                   # Uploaded flight data files
 ```
 
-## Authentication
+## Security Features
 
-The API uses a simple bearer token authentication. Include the token in the `Authorization` header:
+### Single Device Login
+- Only one active session per user account
+- Logging in from a new device automatically invalidates previous sessions
+- Users receive clear feedback when kicked out
 
-```
-Authorization: a6bca59a8855b4
-```
+### Role-Based Access Control
+- **Admin** - Full system access
+- **FDA** - Flight Data Analyst access
+- **Gatekeeper** - Company-level management
+- **User** - Basic read access
 
-## File Uploads
+### Company Data Isolation
+- Users can only access data within their company
+- Cross-company data access is prevented at the middleware level
 
-CSV files are uploaded to the `/csvs` directory and served statically. The upload endpoint accepts multipart/form-data with the file and metadata.
+## License
 
-## Database Schema
-
-The application uses the existing Prisma database schema with the following main entities:
-- Users
-- Aircraft
-- CSV files
-- Events
-- Exceedances
-
-All relationships and constraints are maintained as defined in the original Prisma schema.
-"# api.orangebox" 
+MIT License

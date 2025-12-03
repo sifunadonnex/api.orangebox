@@ -127,16 +127,46 @@ func (h *UserHandler) Login(c *gin.Context) {
 		}
 	}
 
-	// Generate JWT token
-	token, err := utils.GenerateJWT(user.ID, user.Email, user.Role, user.CompanyID)
+	// SINGLE DEVICE LOGIN ENFORCEMENT
+	// Step 1: Invalidate ALL existing sessions for this user
+	now := time.Now()
+	_, err = h.db.Exec(
+		"UPDATE Session SET isActive = 0, updatedAt = ? WHERE userId = ? AND isActive = 1",
+		now.UnixMilli(), user.ID,
+	)
+	if err != nil {
+		log.Printf("Error invalidating old sessions: %v", err)
+		// Continue anyway - don't block login
+	}
+
+	// Step 2: Create new session
+	sessionID := uuid.New().String()
+	expiresAt := now.Add(time.Hour * 24 * 7) // 7 days expiry, same as JWT
+	deviceInfo := c.GetHeader("User-Agent")
+	ipAddress := c.ClientIP()
+
+	_, err = h.db.Exec(`
+		INSERT INTO Session (id, userId, token, deviceInfo, ipAddress, isActive, expiresAt, createdAt, updatedAt)
+		VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
+	`, sessionID, user.ID, "", deviceInfo, ipAddress, expiresAt.UnixMilli(), now.UnixMilli(), now.UnixMilli())
+	if err != nil {
+		log.Printf("Error creating session: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error creating session"})
+		return
+	}
+
+	// Step 3: Generate JWT token WITH session ID
+	token, err := utils.GenerateJWT(user.ID, user.Email, user.Role, user.CompanyID, sessionID)
 	if err != nil {
 		log.Printf("Error generating JWT: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating token"})
 		return
 	}
 
+	// Step 4: Update session with the token
+	h.db.Exec("UPDATE Session SET token = ?, updatedAt = ? WHERE id = ?", token, now.UnixMilli(), sessionID)
+
 	// Update last login
-	now := time.Now()
 	h.db.Exec("UPDATE User SET lastLoginAt = ? WHERE id = ?", now, user.ID)
 	user.LastLoginAt = &now
 
@@ -156,13 +186,117 @@ func (h *UserHandler) Login(c *gin.Context) {
 		}
 	}
 
-	log.Println("Login successful")
+	log.Printf("Login successful for user %s from IP %s", user.Email, ipAddress)
 
 	// Return user with token (no password)
 	c.JSON(http.StatusOK, gin.H{
-		"user":    user,
-		"token":   token,
-		"message": "Login successful",
+		"user":      user,
+		"token":     token,
+		"sessionId": sessionID,
+		"message":   "Login successful",
+	})
+}
+
+// Logout invalidates the current user's session
+func (h *UserHandler) Logout(c *gin.Context) {
+	sessionID, exists := c.Get("sessionId")
+	userID, _ := c.Get("userId")
+	
+	if !exists || sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No active session"})
+		return
+	}
+
+	now := time.Now()
+	result, err := h.db.Exec(
+		"UPDATE Session SET isActive = 0, updatedAt = ? WHERE id = ? AND userId = ?",
+		now.UnixMilli(), sessionID, userID,
+	)
+	
+	if err != nil {
+		log.Printf("Error logging out: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error logging out"})
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Session not found or already logged out"})
+		return
+	}
+
+	log.Printf("User %s logged out successfully", userID)
+	c.JSON(http.StatusOK, gin.H{"message": "Logged out successfully"})
+}
+
+// LogoutAllDevices invalidates ALL sessions for the current user
+func (h *UserHandler) LogoutAllDevices(c *gin.Context) {
+	userID, _ := c.Get("userId")
+
+	now := time.Now()
+	result, err := h.db.Exec(
+		"UPDATE Session SET isActive = 0, updatedAt = ? WHERE userId = ? AND isActive = 1",
+		now.UnixMilli(), userID,
+	)
+	
+	if err != nil {
+		log.Printf("Error logging out all devices: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error logging out"})
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	log.Printf("User %s logged out from %d device(s)", userID, rowsAffected)
+	
+	c.JSON(http.StatusOK, gin.H{
+		"message":        "Logged out from all devices",
+		"sessionsEnded": rowsAffected,
+	})
+}
+
+// GetActiveSessions returns all active sessions for the current user
+func (h *UserHandler) GetActiveSessions(c *gin.Context) {
+	userID, _ := c.Get("userId")
+	currentSessionID, _ := c.Get("sessionId")
+
+	rows, err := h.db.Query(`
+		SELECT id, deviceInfo, ipAddress, expiresAt, createdAt 
+		FROM Session 
+		WHERE userId = ? AND isActive = 1 AND expiresAt > ?
+		ORDER BY createdAt DESC
+	`, userID, time.Now().UnixMilli())
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error fetching sessions"})
+		return
+	}
+	defer rows.Close()
+
+	var sessions []map[string]interface{}
+	for rows.Next() {
+		var id string
+		var deviceInfo, ipAddress sql.NullString
+		var expiresAt, createdAt int64
+
+		err := rows.Scan(&id, &deviceInfo, &ipAddress, &expiresAt, &createdAt)
+		if err != nil {
+			continue
+		}
+
+		session := map[string]interface{}{
+			"sessionId": id,
+			"deviceInfo": deviceInfo.String,
+			"ipAddress":  ipAddress.String,
+			"expiresAt":  time.UnixMilli(expiresAt),
+			"createdAt":  time.UnixMilli(createdAt),
+			"isCurrent":  id == currentSessionID,
+		}
+		sessions = append(sessions, session)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"sessions": sessions,
+		"count":    len(sessions),
 	})
 }
 
