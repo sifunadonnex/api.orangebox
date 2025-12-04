@@ -170,6 +170,7 @@ func main() {
 		exceedances := api.Group("/exceedances")
 		{
 			exceedances.GET("", middleware.AnyAuthenticatedUser(), exceedanceHandler.GetExceedances)
+			exceedances.GET("/benchmarks", middleware.AnyAuthenticatedUser(), exceedanceHandler.GetGlobalBenchmarks)
 			exceedances.GET("/:id", middleware.AnyAuthenticatedUser(), exceedanceHandler.GetExceedanceByID)
 			exceedances.GET("/flight/:id", middleware.AnyAuthenticatedUser(), exceedanceHandler.GetExceedancesByFlightID)
 			exceedances.POST("", middleware.GatekeeperOrAbove(), exceedanceHandler.CreateExceedances)

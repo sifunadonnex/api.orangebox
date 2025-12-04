@@ -113,6 +113,9 @@ type Exceedance struct {
 	ExceedanceLevel  *string   `json:"exceedanceLevel" db:"exceedanceLevel"`
 	CreatedAt        time.Time `json:"createdAt" db:"createdAt"`
 	UpdatedAt        time.Time `json:"updatedAt" db:"updatedAt"`
+	// Related data - populated via JOINs
+	AircraftRegistration *string   `json:"aircraftRegistration,omitempty"`
+	EventLog             *EventLog `json:"EventLog,omitempty"`
 }
 
 // Request/Response DTOs

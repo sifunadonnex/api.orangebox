@@ -233,6 +233,33 @@ func (h *EventHandler) UpdateEvent(c *gin.Context) {
 		return
 	}
 
+	// Debug logging
+	println("=== UpdateEvent Debug ===")
+	println("Event ID:", id)
+	if req.EventName != nil {
+		println("EventName received:", *req.EventName)
+	} else {
+		println("EventName is nil")
+	}
+	println("DisplayName:", req.DisplayName)
+	println("EventCode:", req.EventCode)
+	println("EventTrigger:", req.EventTrigger)
+	if req.TriggerType != nil {
+		println("TriggerType received:", *req.TriggerType)
+	} else {
+		println("TriggerType is nil")
+	}
+	if req.DetectionPeriod != nil {
+		println("DetectionPeriod received:", *req.DetectionPeriod)
+	} else {
+		println("DetectionPeriod is nil")
+	}
+	if req.Severities != nil {
+		println("Severities received:", *req.Severities)
+	} else {
+		println("Severities is nil")
+	}
+
 	now := time.Now()
 
 	query := `UPDATE EventLog SET eventName = ?, displayName = ?, eventCode = ?, eventDescription = ?, eventParameter = ?, eventTrigger = ?, eventType = ?, flightPhase = ?, high = ?, low = ?, low1 = ?, high1 = ?, low2 = ?, high2 = ?, triggerType = ?, detectionPeriod = ?, severities = ?, sop = ?, aircraftId = ?, updatedAt = ? WHERE id = ?`
@@ -241,6 +268,7 @@ func (h *EventHandler) UpdateEvent(c *gin.Context) {
 		req.EventParameter, req.EventTrigger, req.EventType, req.FlightPhase, req.High, req.Low,
 		req.Low1, req.High1, req.Low2, req.High2, req.TriggerType, req.DetectionPeriod, req.Severities, req.SOP, req.AircraftID, now.UnixMilli(), id)
 	if err != nil {
+		println("Database error:", err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating event"})
 		return
 	}

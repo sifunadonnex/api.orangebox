@@ -264,9 +264,17 @@ func (h *CSVHandler) DeleteCSV(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "CSV deleted successfully"})
 }
 
-// Helper function to get exceedances for a CSV
+// Helper function to get exceedances for a CSV with related EventLog and Aircraft data
 func (h *CSVHandler) getCSVExceedances(csvID string) ([]models.Exceedance, error) {
-	query := `SELECT id, exceedanceValues, flightPhase, parameterName, description, eventStatus, aircraftId, flightId, file, eventId, comment, exceedanceLevel, createdAt, updatedAt FROM Exceedance WHERE flightId = ?`
+	query := `SELECT e.id, e.exceedanceValues, e.flightPhase, e.parameterName, e.description, e.eventStatus, 
+			  e.aircraftId, e.flightId, e.file, e.eventId, e.comment, e.exceedanceLevel, e.createdAt, e.updatedAt,
+			  a.serialNumber as aircraftRegistration,
+			  ev.id as eventLogId, ev.eventName, ev.displayName, ev.eventCode, ev.eventDescription, 
+			  ev.eventParameter, ev.eventTrigger, ev.eventType, ev.flightPhase as eventFlightPhase
+			  FROM Exceedance e
+			  LEFT JOIN Aircraft a ON e.aircraftId = a.id
+			  LEFT JOIN EventLog ev ON e.eventId = ev.id
+			  WHERE e.flightId = ?`
 	rows, err := h.db.Query(query, csvID)
 	if err != nil {
 		return nil, err
@@ -277,11 +285,18 @@ func (h *CSVHandler) getCSVExceedances(csvID string) ([]models.Exceedance, error
 	for rows.Next() {
 		var exceedance models.Exceedance
 		var createdAtStr, updatedAtStr sql.NullString
+		var aircraftRegistration sql.NullString
+		// EventLog fields
+		var eventLogId, eventName, displayName, eventCode, eventDescription sql.NullString
+		var eventParameter, eventTrigger, eventType, eventFlightPhase sql.NullString
 
 		err := rows.Scan(&exceedance.ID, &exceedance.ExceedanceValues, &exceedance.FlightPhase,
 			&exceedance.ParameterName, &exceedance.Description, &exceedance.EventStatus,
 			&exceedance.AircraftID, &exceedance.FlightID, &exceedance.File, &exceedance.EventID,
-			&exceedance.Comment, &exceedance.ExceedanceLevel, &createdAtStr, &updatedAtStr)
+			&exceedance.Comment, &exceedance.ExceedanceLevel, &createdAtStr, &updatedAtStr,
+			&aircraftRegistration,
+			&eventLogId, &eventName, &displayName, &eventCode, &eventDescription,
+			&eventParameter, &eventTrigger, &eventType, &eventFlightPhase)
 		if err != nil {
 			continue
 		}
@@ -298,6 +313,43 @@ func (h *CSVHandler) getCSVExceedances(csvID string) ([]models.Exceedance, error
 			if err == nil {
 				exceedance.UpdatedAt = parsedTime
 			}
+		}
+
+		// Set aircraft registration
+		if aircraftRegistration.Valid {
+			exceedance.AircraftRegistration = &aircraftRegistration.String
+		}
+
+		// Build EventLog if available
+		if eventLogId.Valid {
+			eventLog := &models.EventLog{
+				ID: eventLogId.String,
+			}
+			if eventName.Valid {
+				eventLog.EventName = &eventName.String
+			}
+			if displayName.Valid {
+				eventLog.DisplayName = displayName.String
+			}
+			if eventCode.Valid {
+				eventLog.EventCode = eventCode.String
+			}
+			if eventDescription.Valid {
+				eventLog.EventDescription = eventDescription.String
+			}
+			if eventParameter.Valid {
+				eventLog.EventParameter = eventParameter.String
+			}
+			if eventTrigger.Valid {
+				eventLog.EventTrigger = eventTrigger.String
+			}
+			if eventType.Valid {
+				eventLog.EventType = eventType.String
+			}
+			if eventFlightPhase.Valid {
+				eventLog.FlightPhase = eventFlightPhase.String
+			}
+			exceedance.EventLog = eventLog
 		}
 
 		exceedances = append(exceedances, exceedance)

@@ -5,6 +5,7 @@ import (
 	"fdm-backend/models"
 	"log"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -451,4 +452,212 @@ func (h *ExceedanceHandler) DeleteExceedance(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Exceedance deleted successfully"})
+}
+
+// GetGlobalBenchmarks returns aggregated benchmarking data across all clients
+func (h *ExceedanceHandler) GetGlobalBenchmarks(c *gin.Context) {
+	// Optional filter by aircraft model
+	aircraftModel := c.Query("model")
+
+	// Get total flights and exceedances grouped by aircraft model
+	var modelQuery string
+	var rows *sql.Rows
+	var err error
+
+	if aircraftModel != "" {
+		modelQuery = `
+			SELECT 
+				a.aircraftMake,
+				a.modelNumber,
+				COUNT(DISTINCT csv.id) as totalFlights,
+				COUNT(e.id) as totalExceedances,
+				SUM(CASE WHEN e.exceedanceLevel = 'None' THEN 1 ELSE 0 END) as severityNone,
+				SUM(CASE WHEN e.exceedanceLevel = 'Low' THEN 1 ELSE 0 END) as severityLow,
+				SUM(CASE WHEN e.exceedanceLevel = 'Medium' THEN 1 ELSE 0 END) as severityMedium,
+				SUM(CASE WHEN e.exceedanceLevel = 'High' THEN 1 ELSE 0 END) as severityHigh,
+				SUM(CASE WHEN e.exceedanceLevel = 'Critical' THEN 1 ELSE 0 END) as severityCritical
+			FROM Aircraft a
+			LEFT JOIN Csv csv ON csv.aircraftId = a.id
+			LEFT JOIN Exceedance e ON e.flightId = csv.id
+			WHERE a.aircraftMake = ? OR a.modelNumber = ?
+			GROUP BY a.aircraftMake, a.modelNumber`
+		rows, err = h.db.Query(modelQuery, aircraftModel, aircraftModel)
+	} else {
+		modelQuery = `
+			SELECT 
+				a.aircraftMake,
+				a.modelNumber,
+				COUNT(DISTINCT csv.id) as totalFlights,
+				COUNT(e.id) as totalExceedances,
+				SUM(CASE WHEN e.exceedanceLevel = 'None' THEN 1 ELSE 0 END) as severityNone,
+				SUM(CASE WHEN e.exceedanceLevel = 'Low' THEN 1 ELSE 0 END) as severityLow,
+				SUM(CASE WHEN e.exceedanceLevel = 'Medium' THEN 1 ELSE 0 END) as severityMedium,
+				SUM(CASE WHEN e.exceedanceLevel = 'High' THEN 1 ELSE 0 END) as severityHigh,
+				SUM(CASE WHEN e.exceedanceLevel = 'Critical' THEN 1 ELSE 0 END) as severityCritical
+			FROM Aircraft a
+			LEFT JOIN Csv csv ON csv.aircraftId = a.id
+			LEFT JOIN Exceedance e ON e.flightId = csv.id
+			GROUP BY a.aircraftMake, a.modelNumber`
+		rows, err = h.db.Query(modelQuery)
+	}
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error", "details": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	type ModelStats struct {
+		AircraftMake     string  `json:"aircraftMake"`
+		ModelNumber      string  `json:"modelNumber"`
+		TotalFlights     int     `json:"totalFlights"`
+		TotalExceedances int     `json:"totalExceedances"`
+		EventsPer100     float64 `json:"eventsPer100"`
+		SeverityNone     int     `json:"severityNone"`
+		SeverityLow      int     `json:"severityLow"`
+		SeverityMedium   int     `json:"severityMedium"`
+		SeverityHigh     int     `json:"severityHigh"`
+		SeverityCritical int     `json:"severityCritical"`
+	}
+
+	var modelStats []ModelStats
+	var globalTotalFlights, globalTotalExceedances int
+	var globalSeverityNone, globalSeverityLow, globalSeverityMedium, globalSeverityHigh, globalSeverityCritical int
+
+	for rows.Next() {
+		var stats ModelStats
+		var modelNumber sql.NullString
+		err := rows.Scan(&stats.AircraftMake, &modelNumber, &stats.TotalFlights, &stats.TotalExceedances,
+			&stats.SeverityNone, &stats.SeverityLow, &stats.SeverityMedium, &stats.SeverityHigh, &stats.SeverityCritical)
+		if err != nil {
+			continue
+		}
+
+		if modelNumber.Valid {
+			stats.ModelNumber = modelNumber.String
+		}
+
+		if stats.TotalFlights > 0 {
+			stats.EventsPer100 = float64(stats.TotalExceedances) / float64(stats.TotalFlights) * 100
+		}
+
+		modelStats = append(modelStats, stats)
+
+		globalTotalFlights += stats.TotalFlights
+		globalTotalExceedances += stats.TotalExceedances
+		globalSeverityNone += stats.SeverityNone
+		globalSeverityLow += stats.SeverityLow
+		globalSeverityMedium += stats.SeverityMedium
+		globalSeverityHigh += stats.SeverityHigh
+		globalSeverityCritical += stats.SeverityCritical
+	}
+
+	// Calculate global averages
+	var globalEventsPer100 float64
+	if globalTotalFlights > 0 {
+		globalEventsPer100 = float64(globalTotalExceedances) / float64(globalTotalFlights) * 100
+	}
+
+	// Calculate percentiles from model stats
+	var eventRates []float64
+	for _, stats := range modelStats {
+		if stats.TotalFlights > 0 {
+			eventRates = append(eventRates, stats.EventsPer100)
+		}
+	}
+
+	// Sort event rates to calculate percentiles
+	sort.Float64s(eventRates)
+
+	var percentile25, percentile50, percentile75, percentile90 float64
+	n := len(eventRates)
+	if n > 0 {
+		percentile25 = getPercentile(eventRates, 25)
+		percentile50 = getPercentile(eventRates, 50)
+		percentile75 = getPercentile(eventRates, 75)
+		percentile90 = getPercentile(eventRates, 90)
+	}
+
+	// Calculate severity rates per 100 flights
+	var severityPer100 = map[string]float64{}
+	if globalTotalFlights > 0 {
+		severityPer100["None"] = float64(globalSeverityNone) / float64(globalTotalFlights) * 100
+		severityPer100["Low"] = float64(globalSeverityLow) / float64(globalTotalFlights) * 100
+		severityPer100["Medium"] = float64(globalSeverityMedium) / float64(globalTotalFlights) * 100
+		severityPer100["High"] = float64(globalSeverityHigh) / float64(globalTotalFlights) * 100
+		severityPer100["Critical"] = float64(globalSeverityCritical) / float64(globalTotalFlights) * 100
+	}
+
+	// Get event type breakdown
+	eventTypeQuery := `
+		SELECT 
+			COALESCE(el.displayName, e.description, 'Unknown') as eventName,
+			COUNT(*) as count
+		FROM Exceedance e
+		LEFT JOIN EventLog el ON e.eventId = el.id
+		GROUP BY eventName
+		ORDER BY count DESC
+		LIMIT 20`
+
+	eventRows, err := h.db.Query(eventTypeQuery)
+	if err == nil {
+		defer eventRows.Close()
+	}
+
+	type EventTypeStats struct {
+		EventName string  `json:"eventName"`
+		Count     int     `json:"count"`
+		Per100    float64 `json:"per100"`
+	}
+
+	var eventTypeStats []EventTypeStats
+	if eventRows != nil {
+		for eventRows.Next() {
+			var stats EventTypeStats
+			err := eventRows.Scan(&stats.EventName, &stats.Count)
+			if err != nil {
+				continue
+			}
+			if globalTotalFlights > 0 {
+				stats.Per100 = float64(stats.Count) / float64(globalTotalFlights) * 100
+			}
+			eventTypeStats = append(eventTypeStats, stats)
+		}
+	}
+
+	response := gin.H{
+		"globalStats": gin.H{
+			"totalFlights":        globalTotalFlights,
+			"totalExceedances":    globalTotalExceedances,
+			"averageEventsPer100": globalEventsPer100,
+			"percentile25":        percentile25,
+			"percentile50":        percentile50,
+			"percentile75":        percentile75,
+			"percentile90":        percentile90,
+			"bySeverity":          severityPer100,
+		},
+		"byModel":     modelStats,
+		"byEventType": eventTypeStats,
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// Helper function to calculate percentile
+func getPercentile(sortedData []float64, percentile float64) float64 {
+	n := len(sortedData)
+	if n == 0 {
+		return 0
+	}
+	if n == 1 {
+		return sortedData[0]
+	}
+	index := (percentile / 100) * float64(n-1)
+	lower := int(index)
+	upper := lower + 1
+	if upper >= n {
+		return sortedData[n-1]
+	}
+	weight := index - float64(lower)
+	return sortedData[lower]*(1-weight) + sortedData[upper]*weight
 }
