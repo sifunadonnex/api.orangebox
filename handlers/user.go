@@ -611,6 +611,43 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 	now := time.Now()
 
 	// Build dynamic update query
+	// Authorization check - non-admins/non-FDA can only update users in their company
+	userRole, _ := c.Get("userRole")
+	userCompanyID, companyExists := c.Get("userCompanyId")
+
+	role, ok := userRole.(string)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid user role"})
+		return
+	}
+
+	// For non-admin/non-FDA users, check company access
+	if role != models.RoleAdmin && role != models.RoleFDA {
+		// First fetch the target user to get their company ID
+		var targetUserCompanyID *string
+		err := h.db.QueryRow("SELECT companyId FROM User WHERE id = ?", id).Scan(&targetUserCompanyID)
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error checking user access", "details": err.Error()})
+			return
+		}
+
+		// Check if the target user is in the same company as the requesting user
+		if !companyExists {
+			c.JSON(http.StatusForbidden, gin.H{"error": "You do not have permission to update users"})
+			return
+		}
+
+		requestingUserCompanyID := userCompanyID.(string)
+		if targetUserCompanyID == nil || *targetUserCompanyID != requestingUserCompanyID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "You can only update users in your company"})
+			return
+		}
+	}
+
 	query := "UPDATE User SET updatedAt = ?"
 	args := []interface{}{now}
 

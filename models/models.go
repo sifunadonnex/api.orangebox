@@ -160,6 +160,8 @@ type CreateAircraftRequest struct {
 	SerialNumber string  `json:"serialNumber" binding:"required"`
 	CompanyID    string  `json:"companyId" binding:"required"`
 	Parameters   *string `json:"parameters,omitempty"`
+	ModelNumber  *string `json:"modelNumber,omitempty"`
+	Registration *string `json:"registration,omitempty"`
 }
 
 // UpdateAircraftRequest represents the update aircraft request payload
@@ -169,6 +171,8 @@ type UpdateAircraftRequest struct {
 	SerialNumber string  `json:"serialNumber" binding:"required"`
 	CompanyID    string  `json:"companyId" binding:"required"`
 	Parameters   *string `json:"parameters,omitempty"`
+	ModelNumber  *string `json:"modelNumber,omitempty"`
+	Registration *string `json:"registration,omitempty"`
 }
 
 // UploadCSVRequest represents the CSV upload request payload

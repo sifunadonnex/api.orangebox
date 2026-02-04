@@ -37,7 +37,7 @@ func parseTimestamp(timeStr string) (time.Time, error) {
 
 // GetAircrafts retrieves all aircraft with related data
 func (h *AircraftHandler) GetAircrafts(c *gin.Context) {
-	query := `SELECT id, airline, aircraftMake, modelNumber, serialNumber, companyId, parameters, createdAt, updatedAt FROM Aircraft`
+	query := `SELECT id, airline, aircraftMake, modelNumber, serialNumber, registration, companyId, parameters, createdAt, updatedAt FROM Aircraft`
 	rows, err := h.db.Query(query)
 	if err != nil {
 		println("GetAircrafts query error:", err.Error())
@@ -49,11 +49,11 @@ func (h *AircraftHandler) GetAircrafts(c *gin.Context) {
 	var aircrafts []interface{}
 	for rows.Next() {
 		var aircraft models.Aircraft
-		var modelNumber, parameters sql.NullString
+		var modelNumber, registration, parameters sql.NullString
 		var createdAtStr, updatedAtStr sql.NullString
 
 		err := rows.Scan(&aircraft.ID, &aircraft.Airline, &aircraft.AircraftMake, &modelNumber,
-			&aircraft.SerialNumber, &aircraft.CompanyID, &parameters, &createdAtStr, &updatedAtStr)
+			&aircraft.SerialNumber, &registration, &aircraft.CompanyID, &parameters, &createdAtStr, &updatedAtStr)
 		if err != nil {
 			println("GetAircrafts scan error:", err.Error())
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning aircraft", "details": err.Error()})
@@ -63,6 +63,9 @@ func (h *AircraftHandler) GetAircrafts(c *gin.Context) {
 		// Handle nullable fields
 		if modelNumber.Valid {
 			aircraft.ModelNumber = &modelNumber.String
+		}
+		if registration.Valid {
+			aircraft.Registration = &registration.String
 		}
 		if parameters.Valid {
 			aircraft.Parameters = &parameters.String
@@ -209,7 +212,7 @@ func (h *AircraftHandler) GetAircraftByID(c *gin.Context) {
 func (h *AircraftHandler) GetAircraftsByUserID(c *gin.Context) {
 	companyID := c.Param("id")
 
-	query := `SELECT id, airline, aircraftMake, modelNumber, serialNumber, companyId, parameters, createdAt, updatedAt FROM Aircraft WHERE companyId = ?`
+	query := `SELECT id, airline, aircraftMake, modelNumber, serialNumber, registration, companyId, parameters, createdAt, updatedAt FROM Aircraft WHERE companyId = ?`
 	rows, err := h.db.Query(query, companyID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
@@ -220,11 +223,11 @@ func (h *AircraftHandler) GetAircraftsByUserID(c *gin.Context) {
 	var aircrafts []interface{}
 	for rows.Next() {
 		var aircraft models.Aircraft
-		var modelNumber, parameters sql.NullString
+		var modelNumber, registration, parameters sql.NullString
 		var createdAtStr, updatedAtStr sql.NullString
 
 		err := rows.Scan(&aircraft.ID, &aircraft.Airline, &aircraft.AircraftMake, &modelNumber,
-			&aircraft.SerialNumber, &aircraft.CompanyID, &parameters, &createdAtStr, &updatedAtStr)
+			&aircraft.SerialNumber, &registration, &aircraft.CompanyID, &parameters, &createdAtStr, &updatedAtStr)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning aircraft"})
 			return
@@ -233,6 +236,9 @@ func (h *AircraftHandler) GetAircraftsByUserID(c *gin.Context) {
 		// Handle nullable fields
 		if modelNumber.Valid {
 			aircraft.ModelNumber = &modelNumber.String
+		}
+		if registration.Valid {
+			aircraft.Registration = &registration.String
 		}
 		if parameters.Valid {
 			aircraft.Parameters = &parameters.String
@@ -294,10 +300,10 @@ func (h *AircraftHandler) CreateAircraft(c *gin.Context) {
 	now := time.Now()
 
 	// Insert aircraft
-	query := `INSERT INTO Aircraft (id, airline, aircraftMake, serialNumber, companyId, parameters, createdAt, updatedAt) 
-			  VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO Aircraft (id, airline, aircraftMake, modelNumber, serialNumber, registration, companyId, parameters, createdAt, updatedAt) 
+			  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	_, err := h.db.Exec(query, id, req.Airline, req.AircraftMake, req.SerialNumber, req.CompanyID, req.Parameters, now.UnixMilli(), now.UnixMilli())
+	_, err := h.db.Exec(query, id, req.Airline, req.AircraftMake, req.ModelNumber, req.SerialNumber, req.Registration, req.CompanyID, req.Parameters, now.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error creating aircraft"})
 		return
@@ -308,7 +314,9 @@ func (h *AircraftHandler) CreateAircraft(c *gin.Context) {
 		ID:           id,
 		Airline:      req.Airline,
 		AircraftMake: req.AircraftMake,
+		ModelNumber:  req.ModelNumber,
 		SerialNumber: req.SerialNumber,
+		Registration: req.Registration,
 		CompanyID:    req.CompanyID,
 		Parameters:   req.Parameters,
 		CreatedAt:    now,
@@ -329,8 +337,8 @@ func (h *AircraftHandler) UpdateAircraft(c *gin.Context) {
 
 	now := time.Now()
 
-	query := `UPDATE Aircraft SET airline = ?, aircraftMake = ?, serialNumber = ?, companyId = ?, parameters = ?, updatedAt = ? WHERE id = ?`
-	result, err := h.db.Exec(query, req.Airline, req.AircraftMake, req.SerialNumber, req.CompanyID, req.Parameters, now.UnixMilli(), id)
+	query := `UPDATE Aircraft SET airline = ?, aircraftMake = ?, modelNumber = ?, serialNumber = ?, registration = ?, companyId = ?, parameters = ?, updatedAt = ? WHERE id = ?`
+	result, err := h.db.Exec(query, req.Airline, req.AircraftMake, req.ModelNumber, req.SerialNumber, req.Registration, req.CompanyID, req.Parameters, now.UnixMilli(), id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating aircraft"})
 		return
@@ -347,7 +355,9 @@ func (h *AircraftHandler) UpdateAircraft(c *gin.Context) {
 		ID:           id,
 		Airline:      req.Airline,
 		AircraftMake: req.AircraftMake,
+		ModelNumber:  req.ModelNumber,
 		SerialNumber: req.SerialNumber,
+		Registration: req.Registration,
 		CompanyID:    req.CompanyID,
 		Parameters:   req.Parameters,
 		UpdatedAt:    now,

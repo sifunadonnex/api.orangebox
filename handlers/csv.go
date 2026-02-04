@@ -357,3 +357,44 @@ func (h *CSVHandler) getCSVExceedances(csvID string) ([]models.Exceedance, error
 
 	return exceedances, nil
 }
+
+// DeleteCSV deletes a CSV file and its associated data
+func (h *CSVHandler) DeleteCSV(c *gin.Context) {
+	id := c.Param("id")
+
+	// Check if CSV exists
+	var exists bool
+	var filename string
+	err := h.db.QueryRow("SELECT EXISTS(SELECT 1 FROM Csv WHERE id = ?), (SELECT file FROM Csv WHERE id = ?)", id, id).Scan(&exists, &filename)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return
+	}
+
+	if !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Flight not found"})
+		return
+	}
+
+	// Delete associated exceedances first (foreign key constraint)
+	_, err = h.db.Exec("DELETE FROM Exceedance WHERE csvId = ?", id)
+	if err != nil {
+		log.Printf("Warning: Failed to delete associated exceedances: %v", err)
+	}
+
+	// Delete CSV record from database
+	query := "DELETE FROM Csv WHERE id = ?"
+	result, err := h.db.Exec(query, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete flight", "details": err.Error()})
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Flight not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Flight deleted successfully"})
+}
