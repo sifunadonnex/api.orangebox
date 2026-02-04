@@ -244,25 +244,7 @@ func (h *CSVHandler) GetCSVByID(c *gin.Context) {
 	c.JSON(http.StatusOK, csv)
 }
 
-// DeleteCSV deletes a CSV record
-func (h *CSVHandler) DeleteCSV(c *gin.Context) {
-	id := c.Param("id")
 
-	query := `DELETE FROM Csv WHERE id = ?`
-	result, err := h.db.Exec(query, id)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error deleting CSV"})
-		return
-	}
-
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "CSV not found"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "CSV deleted successfully"})
-}
 
 // Helper function to get exceedances for a CSV with related EventLog and Aircraft data
 func (h *CSVHandler) getCSVExceedances(csvID string) ([]models.Exceedance, error) {
@@ -377,7 +359,7 @@ func (h *CSVHandler) DeleteCSV(c *gin.Context) {
 	}
 
 	// Delete associated exceedances first (foreign key constraint)
-	_, err = h.db.Exec("DELETE FROM Exceedance WHERE csvId = ?", id)
+	_, err = h.db.Exec("DELETE FROM Exceedance WHERE flightId = ?", id)
 	if err != nil {
 		log.Printf("Warning: Failed to delete associated exceedances: %v", err)
 	}
