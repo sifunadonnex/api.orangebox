@@ -67,6 +67,12 @@ func main() {
 	// Public routes
 	log.Println("Setting up routes...")
 	router.POST("/login", userHandler.Login)
+	router.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+	router.GET("/ping", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
 	router.GET("/test-simple", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "Server is working"})
 	})
