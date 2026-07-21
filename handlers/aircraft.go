@@ -389,7 +389,7 @@ func (h *AircraftHandler) DeleteAircraft(c *gin.Context) {
 // Helper functions
 
 func (h *AircraftHandler) getAircraftCSVs(aircraftID string) ([]models.CSV, error) {
-	query := `SELECT id, name, file, status, departure, pilot, destination, flightHours, aircraftId, createdAt, updatedAt FROM Csv WHERE aircraftId = ?`
+	query := `SELECT id, name, file, status, departure, pilot, destination, flightHours, aircraftId, sampleIntervalMs, analysisSummary, createdAt, updatedAt FROM Csv WHERE aircraftId = ?`
 	rows, err := h.db.Query(query, aircraftID)
 	if err != nil {
 		return nil, err
@@ -402,7 +402,7 @@ func (h *AircraftHandler) getAircraftCSVs(aircraftID string) ([]models.CSV, erro
 		var createdAtStr, updatedAtStr sql.NullString
 
 		err := rows.Scan(&csv.ID, &csv.Name, &csv.File, &csv.Status, &csv.Departure, &csv.Pilot,
-			&csv.Destination, &csv.FlightHours, &csv.AircraftID, &createdAtStr, &updatedAtStr)
+			&csv.Destination, &csv.FlightHours, &csv.AircraftID, &csv.SampleIntervalMs, &csv.AnalysisSummary, &createdAtStr, &updatedAtStr)
 		if err != nil {
 			continue
 		}
