@@ -167,8 +167,11 @@ func main() {
 		{
 			events.GET("", middleware.AnyAuthenticatedUser(), eventHandler.GetEvents)
 			events.POST("", middleware.GatekeeperOrAbove(), eventHandler.CreateEvent)
+			events.POST("/validate", middleware.GatekeeperOrAbove(), eventHandler.ValidateEventPayload)
 			events.GET("/:id", middleware.AnyAuthenticatedUser(), eventHandler.GetEventByID)
-			events.PUT("/:id", middleware.AdminOrFDA(), eventHandler.UpdateEvent) // Only FDA can validate
+			events.PUT("/:id", middleware.AdminOrFDA(), eventHandler.UpdateEvent)
+			events.POST("/:id/validate", middleware.AdminOrFDA(), eventHandler.ValidateEventVersion)
+			events.POST("/:id/publish", middleware.AdminOrFDA(), eventHandler.PublishEventVersion)
 			events.DELETE("/:id", middleware.AdminOrFDA(), eventHandler.DeleteEvent)
 		}
 

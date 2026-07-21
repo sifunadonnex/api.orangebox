@@ -25,6 +25,8 @@ model Company {
   updatedAt         DateTime    @updatedAt
   users             User[]
   aircraft          Aircraft[]
+  eventDefinitions  EventDefinition[]
+  eventAssignments  EventDefinitionAssignment[]
 }
 
 model Subscription {
@@ -68,6 +70,9 @@ model User {
   updatedAt       DateTime      @updatedAt
   notifications   Notification[]
   sessions        Session[]     // User's active sessions for single-device login
+  createdEventDefinitions EventDefinition[]        @relation("EventDefinitionCreatedBy")
+  createdEventVersions    EventDefinitionVersion[] @relation("EventVersionCreatedBy")
+  approvedEventVersions   EventDefinitionVersion[] @relation("EventVersionApprovedBy")
 }
 
 // Session model for single-device login enforcement
@@ -94,10 +99,13 @@ model Csv {
   destination String?
   flightHours String?
   aircraftId String     // Corrected field name
+  sampleIntervalMs Int?
+  analysisSummary String?
   aircraft  Aircraft @relation(fields: [aircraftId], references: [id])
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   Exceedance Exceedance[]
+  detectionRuns DetectionRun[]
 }
 
 model Aircraft {
@@ -114,8 +122,10 @@ model Aircraft {
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
   Flight       Flight[]
-  EventLog     EventLog[]
+  primaryEventVersions EventDefinitionVersion[]
+  eventAssignments     EventDefinitionAssignment[]
   Exceedance   Exceedance[]
+  detectionRuns DetectionRun[]
 }
 
 model Flight {
@@ -127,31 +137,82 @@ model Flight {
   updatedAt  DateTime @updatedAt
 }
 
-model EventLog {
+model EventDefinition {
   id              String      @id @default(cuid())
-  eventName       String?
-  displayName     String
+  companyId       String?
   eventCode       String
-  eventDescription String
-  eventParameter  String
-  eventTrigger    String
   eventType       String
-  flightPhase     String
-  high            String?
-  high1           String?
-  high2           String?
-  low             String?
-  low1            String?
-  low2            String?
-  triggerType     String?
-  detectionPeriod String?
-  severities      String?
-  sop             String
-  aircraftId      String
-  exceedance     Exceedance[]
-  aircraft        Aircraft @relation(fields: [aircraftId], references: [id])
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  lifecycleStatus String      @default("active")
+  createdBy       String
+  company         Company?    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdByUser   User        @relation("EventDefinitionCreatedBy", fields: [createdBy], references: [id])
+  versions        EventDefinitionVersion[]
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@unique([companyId, eventCode])
+  @@index([companyId])
+  @@index([lifecycleStatus])
+}
+
+model EventDefinitionVersion {
+  id                String      @id @default(cuid())
+  definitionId      String
+  version           Int
+  status            String      @default("draft")
+  schemaVersion     Int         @default(1)
+  eventName         String
+  displayName       String
+  eventDescription  String
+  sop               String
+  ruleJson          String
+  ruleHash          String
+  changeSummary     String
+  eventParameter    String
+  eventTrigger      String
+  flightPhase       String
+  triggerType       String      @default("structured")
+  detectionPeriod   String      @default("All Flight")
+  severities        String
+  primaryAircraftId String?
+  createdBy         String
+  approvedBy        String?
+  validatedAt       DateTime?
+  publishedAt       DateTime?
+  effectiveFrom     DateTime?
+  effectiveTo       DateTime?
+  definition        EventDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+  primaryAircraft   Aircraft?       @relation(fields: [primaryAircraftId], references: [id], onDelete: SetNull)
+  createdByUser     User            @relation("EventVersionCreatedBy", fields: [createdBy], references: [id])
+  approvedByUser    User?           @relation("EventVersionApprovedBy", fields: [approvedBy], references: [id])
+  assignments       EventDefinitionAssignment[]
+  exceedances       Exceedance[]
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  @@unique([definitionId, version])
+  @@index([definitionId])
+  @@index([status])
+  @@index([ruleHash])
+}
+
+model EventDefinitionAssignment {
+  id                  String   @id @default(cuid())
+  definitionVersionId String
+  scopeType           String
+  companyId           String?
+  aircraftId          String?
+  aircraftMake        String?
+  modelNumber         String?
+  definitionVersion   EventDefinitionVersion @relation(fields: [definitionVersionId], references: [id], onDelete: Cascade)
+  company             Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  aircraft            Aircraft? @relation(fields: [aircraftId], references: [id], onDelete: Cascade)
+  createdAt           DateTime @default(now())
+
+  @@index([definitionVersionId])
+  @@index([companyId])
+  @@index([aircraftId])
+  @@index([aircraftMake, modelNumber])
 }
 
 model Exceedance {
@@ -167,12 +228,49 @@ model Exceedance {
   eventId         String?
   comment	  String?
   exceedanceLevel String?
-  eventlog        EventLog? @relation(fields: [eventId], references: [id])
+  detectionRunId  String?
+  startTimeMs     Int?
+  endTimeMs       Int?
+  durationMs      Int?
+  peakValue       Float?
+  ruleHash        String?
+  eventDefinitionVersion EventDefinitionVersion? @relation(fields: [eventId], references: [id], onDelete: SetNull)
   aircraft        Aircraft @relation(fields: [aircraftId], references: [id])
   csv             Csv @relation(fields: [flightId], references: [id])
   notifications   Notification[]
+  detectionRun    DetectionRun? @relation(fields: [detectionRunId], references: [id], onDelete: SetNull)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+
+  @@index([detectionRunId])
+  @@index([eventId, flightId])
+}
+
+model DetectionRun {
+  id                  String   @id @default(cuid())
+  flightId            String
+  aircraftId          String
+  engineVersion       String
+  status              String
+  inputHash           String
+  timingSource        String?
+  sampleIntervalMs    Int?
+  rowCount            Int      @default(0)
+  applicableRuleCount Int      @default(0)
+  evaluatedRuleCount  Int      @default(0)
+  occurrenceCount     Int      @default(0)
+  diagnosticsJson     String
+  errorMessage        String?
+  startedAt           DateTime @default(now())
+  completedAt         DateTime?
+  flight              Csv      @relation(fields: [flightId], references: [id], onDelete: Cascade)
+  aircraft            Aircraft @relation(fields: [aircraftId], references: [id], onDelete: Restrict)
+  exceedances         Exceedance[]
+
+  @@unique([flightId, engineVersion, inputHash])
+  @@index([flightId])
+  @@index([aircraftId])
+  @@index([status])
 }
 
 model Notification {

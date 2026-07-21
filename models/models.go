@@ -49,17 +49,19 @@ type Aircraft struct {
 
 // CSV represents a CSV file in the system
 type CSV struct {
-	ID          string    `json:"id" db:"id"`
-	Name        string    `json:"name" db:"name"`
-	File        string    `json:"file" db:"file"`
-	Status      *string   `json:"status" db:"status"`
-	Departure   *string   `json:"departure" db:"departure"`
-	Pilot       *string   `json:"pilot" db:"pilot"`
-	Destination *string   `json:"destination" db:"destination"`
-	FlightHours *string   `json:"flightHours" db:"flightHours"`
-	AircraftID  string    `json:"aircraftId" db:"aircraftId"`
-	CreatedAt   time.Time `json:"createdAt" db:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt" db:"updatedAt"`
+	ID               string    `json:"id" db:"id"`
+	Name             string    `json:"name" db:"name"`
+	File             string    `json:"file" db:"file"`
+	Status           *string   `json:"status" db:"status"`
+	Departure        *string   `json:"departure" db:"departure"`
+	Pilot            *string   `json:"pilot" db:"pilot"`
+	Destination      *string   `json:"destination" db:"destination"`
+	FlightHours      *string   `json:"flightHours" db:"flightHours"`
+	AircraftID       string    `json:"aircraftId" db:"aircraftId"`
+	SampleIntervalMs *int64    `json:"sampleIntervalMs,omitempty" db:"sampleIntervalMs"`
+	AnalysisSummary  *string   `json:"analysisSummary,omitempty" db:"analysisSummary"`
+	CreatedAt        time.Time `json:"createdAt" db:"createdAt"`
+	UpdatedAt        time.Time `json:"updatedAt" db:"updatedAt"`
 }
 
 // Flight represents a flight in the system
@@ -111,6 +113,12 @@ type Exceedance struct {
 	EventID          *string   `json:"eventId" db:"eventId"`
 	Comment          *string   `json:"comment" db:"comment"`
 	ExceedanceLevel  *string   `json:"exceedanceLevel" db:"exceedanceLevel"`
+	DetectionRunID   *string   `json:"detectionRunId,omitempty" db:"detectionRunId"`
+	StartTimeMs      *int64    `json:"startTimeMs,omitempty" db:"startTimeMs"`
+	EndTimeMs        *int64    `json:"endTimeMs,omitempty" db:"endTimeMs"`
+	DurationMs       *int64    `json:"durationMs,omitempty" db:"durationMs"`
+	PeakValue        *float64  `json:"peakValue,omitempty" db:"peakValue"`
+	RuleHash         *string   `json:"ruleHash,omitempty" db:"ruleHash"`
 	CreatedAt        time.Time `json:"createdAt" db:"createdAt"`
 	UpdatedAt        time.Time `json:"updatedAt" db:"updatedAt"`
 	// Related data - populated via JOINs
@@ -177,12 +185,13 @@ type UpdateAircraftRequest struct {
 
 // UploadCSVRequest represents the CSV upload request payload
 type UploadCSVRequest struct {
-	Name        string  `form:"name" binding:"required"`
-	AircraftID  string  `form:"aircraftId" binding:"required"`
-	Departure   *string `form:"departure,omitempty"`
-	Destination *string `form:"destination,omitempty"`
-	FlightHours *string `form:"flightHours,omitempty"`
-	Pilot       *string `form:"pilot,omitempty"`
+	Name             string  `form:"name" binding:"required"`
+	AircraftID       string  `form:"aircraftId" binding:"required"`
+	Departure        *string `form:"departure,omitempty"`
+	Destination      *string `form:"destination,omitempty"`
+	FlightHours      *string `form:"flightHours,omitempty"`
+	Pilot            *string `form:"pilot,omitempty"`
+	SampleIntervalMs int64   `form:"sampleIntervalMs" binding:"required,min=1,max=60000"`
 }
 
 // CreateEventRequest represents the create event request payload
