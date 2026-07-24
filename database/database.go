@@ -26,24 +26,30 @@ func InitDB() (*sql.DB, error) {
 		return nil, fmt.Errorf("database file does not exist at path: %s", dbPath)
 	}
 
-	// Open database connection
-	db, err := sql.Open("sqlite", dbPath)
+	// Apply connection-local SQLite settings to every pooled connection.
+	// A single connection can deadlock when a handler needs a nested read
+	// while iterating an open result set.
+	dsn := dbPath + "?_pragma=foreign_keys%3dON&_pragma=busy_timeout%3d5000"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+
 	// Test the connection
 	if err := db.Ping(); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	// SQLite foreign-key enforcement is connection-local. Keeping a single
-	// connection ensures migrations and API requests use the same guarantees.
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+	// WAL allows readers to continue while a writer is active. The mode is
+	// persistent for the database; busy_timeout is applied per connection by
+	// the DSN above.
+	if _, err := db.Exec("PRAGMA journal_mode = WAL"); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
+		return nil, fmt.Errorf("failed to enable WAL journal mode: %w", err)
 	}
 
 	log.Println("Database connection established successfully")

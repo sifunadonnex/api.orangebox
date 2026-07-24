@@ -173,7 +173,7 @@ func (h *EventHandler) GetEvents(c *gin.Context) {
 
 	events := make([]models.EventDefinitionResponse, 0)
 	for rows.Next() {
-		event, err := h.scanEvent(rows)
+		event, err := h.scanEventBase(rows)
 		if err != nil {
 			respondDatabaseError(c, err)
 			return
@@ -183,6 +183,17 @@ func (h *EventHandler) GetEvents(c *gin.Context) {
 	if err = rows.Err(); err != nil {
 		respondDatabaseError(c, err)
 		return
+	}
+	if err = rows.Close(); err != nil {
+		respondDatabaseError(c, err)
+		return
+	}
+	for index := range events {
+		events[index].Assignments, err = h.getAssignments(events[index].VersionID)
+		if err != nil {
+			respondDatabaseError(c, err)
+			return
+		}
 	}
 	c.JSON(http.StatusOK, events)
 }
@@ -455,6 +466,15 @@ func (h *EventHandler) getEventByDefinitionID(c *gin.Context, definitionID strin
 }
 
 func (h *EventHandler) scanEvent(scanner rowScanner) (models.EventDefinitionResponse, error) {
+	event, err := h.scanEventBase(scanner)
+	if err != nil {
+		return event, err
+	}
+	event.Assignments, err = h.getAssignments(event.VersionID)
+	return event, err
+}
+
+func (h *EventHandler) scanEventBase(scanner rowScanner) (models.EventDefinitionResponse, error) {
 	var event models.EventDefinitionResponse
 	var companyID, primaryAircraftID, approvedBy sql.NullString
 	var validatedAt, publishedAt, effectiveFrom, effectiveTo sql.NullInt64
@@ -486,8 +506,7 @@ func (h *EventHandler) scanEvent(scanner rowScanner) (models.EventDefinitionResp
 	event.CreatedAt = time.UnixMilli(createdAt)
 	event.UpdatedAt = time.UnixMilli(updatedAt)
 	event.IsActive = event.LifecycleStatus == models.EventLifecycleActive && event.Status == models.EventVersionPublished
-	event.Assignments, err = h.getAssignments(event.VersionID)
-	return event, err
+	return event, nil
 }
 
 func (h *EventHandler) getAssignments(versionID string) ([]models.EventDefinitionAssignment, error) {
