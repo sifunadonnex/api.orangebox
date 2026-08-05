@@ -60,8 +60,29 @@ func TestEventDefinitionV2MigrationResetsOnlyDerivedSafetyData(t *testing.T) {
 	if _, err = db.Exec(string(detectionMigration)); err != nil {
 		t.Fatalf("detection migration failed: %v", err)
 	}
+	if _, err = db.Exec(`INSERT INTO DetectionRun
+		(id, flightId, aircraftId, engineVersion, status, inputHash, sampleIntervalMs,
+		 applicableRuleCount, diagnosticsJson, startedAt)
+		VALUES ('run-1', 'flight-1', 'aircraft-1', '2.0.0', 'completed', 'input-1',
+		1000, 0, '[]', 1)`); err != nil {
+		t.Fatalf("failed to create pre-reanalysis run: %v", err)
+	}
+	reanalysisMigration, err := os.ReadFile("migrations/007_reanalysis.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(string(reanalysisMigration)); err != nil {
+		t.Fatalf("reanalysis migration failed: %v", err)
+	}
+	if _, err = db.Exec(`INSERT INTO DetectionRun
+		(id, flightId, aircraftId, engineVersion, status, inputHash, ruleSetHash,
+		 triggerType, sampleIntervalMs, applicableRuleCount, diagnosticsJson, startedAt)
+		VALUES ('run-2', 'flight-1', 'aircraft-1', '2.0.0', 'completed', 'input-1',
+		'rules-2', 'manual', 1000, 0, '[]', 2)`); err != nil {
+		t.Fatalf("expected the same stored input to support a new rule-set run: %v", err)
+	}
 
-	for _, table := range []string{"EventDefinition", "EventDefinitionVersion", "EventDefinitionAssignment", "DetectionRun", "Exceedance", "Notification"} {
+	for _, table := range []string{"EventDefinition", "EventDefinitionVersion", "EventDefinitionAssignment", "DetectionRun", "DetectionRunDefinition", "Exceedance", "Notification"} {
 		var count int
 		if err := db.QueryRow("SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = ?", table).Scan(&count); err != nil || count != 1 {
 			t.Fatalf("expected table %s to exist", table)

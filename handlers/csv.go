@@ -100,7 +100,8 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 		UpdatedAt:        now,
 	}
 
-	analysis := h.analyzeUploadedFlight(csvPath, filename, &csv, aircraft)
+	triggeredBy, _ := contextString(c, "userId")
+	analysis := h.analyzeUploadedFlight(csvPath, filename, &csv, aircraft, triggeredBy)
 	csv.Status = &analysis.Status
 	c.JSON(http.StatusCreated, gin.H{"success": true, "data": csv, "analysis": analysis})
 }
@@ -281,7 +282,7 @@ func (h *CSVHandler) getCSVExceedances(csvID string) ([]models.Exceedance, error
 			  FROM Exceedance e
 			  LEFT JOIN Aircraft a ON e.aircraftId = a.id
 			  LEFT JOIN EventLog ev ON e.eventId = ev.id
-			  WHERE e.flightId = ?`
+			  WHERE e.flightId = ? AND e.isCurrent = 1`
 	rows, err := h.db.Query(query, csvID)
 	if err != nil {
 		return nil, err

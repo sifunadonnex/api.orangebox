@@ -90,6 +90,7 @@ func (h *NotificationHandler) GetUserNotifications(c *gin.Context) {
 
 	query := `SELECT n.id, n.userId, n.exceedanceId, n.message, n.level, n.isRead, n.createdAt, n.updatedAt
 			  FROM Notification n
+			  JOIN Exceedance e ON e.id = n.exceedanceId AND e.isCurrent = 1
 			  WHERE n.userId = ?
 			  ORDER BY n.createdAt DESC`
 

@@ -463,7 +463,7 @@ func (h *AircraftHandler) getAircraftEventLogs(aircraftID string) ([]models.Even
 }
 
 func (h *AircraftHandler) getAircraftExceedances(aircraftID string) ([]models.Exceedance, error) {
-	query := `SELECT id, exceedanceValues, flightPhase, parameterName, description, eventStatus, aircraftId, flightId, file, eventId, comment, exceedanceLevel, createdAt, updatedAt FROM Exceedance WHERE aircraftId = ?`
+	query := `SELECT id, exceedanceValues, flightPhase, parameterName, description, eventStatus, aircraftId, flightId, file, eventId, comment, exceedanceLevel, createdAt, updatedAt FROM Exceedance WHERE aircraftId = ? AND isCurrent = 1`
 	rows, err := h.db.Query(query, aircraftID)
 	if err != nil {
 		return nil, err

@@ -147,6 +147,7 @@ model EventDefinition {
   company         Company?    @relation(fields: [companyId], references: [id], onDelete: Cascade)
   createdByUser   User        @relation("EventDefinitionCreatedBy", fields: [createdBy], references: [id])
   versions        EventDefinitionVersion[]
+  detectionEvaluations DetectionRunDefinition[]
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 
@@ -187,6 +188,7 @@ model EventDefinitionVersion {
   approvedByUser    User?           @relation("EventVersionApprovedBy", fields: [approvedBy], references: [id])
   assignments       EventDefinitionAssignment[]
   exceedances       Exceedance[]
+  detectionEvaluations DetectionRunDefinition[]
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 
@@ -234,6 +236,8 @@ model Exceedance {
   durationMs      Int?
   peakValue       Float?
   ruleHash        String?
+  isCurrent       Boolean     @default(true)
+  supersededAt    DateTime?
   eventDefinitionVersion EventDefinitionVersion? @relation(fields: [eventId], references: [id], onDelete: SetNull)
   aircraft        Aircraft @relation(fields: [aircraftId], references: [id])
   csv             Csv @relation(fields: [flightId], references: [id])
@@ -244,6 +248,7 @@ model Exceedance {
 
   @@index([detectionRunId])
   @@index([eventId, flightId])
+  @@index([flightId, isCurrent])
 }
 
 model DetectionRun {
@@ -253,6 +258,9 @@ model DetectionRun {
   engineVersion       String
   status              String
   inputHash           String
+  ruleSetHash         String
+  triggerType         String   @default("upload")
+  triggeredBy         String?
   timingSource        String?
   sampleIntervalMs    Int?
   rowCount            Int      @default(0)
@@ -266,11 +274,32 @@ model DetectionRun {
   flight              Csv      @relation(fields: [flightId], references: [id], onDelete: Cascade)
   aircraft            Aircraft @relation(fields: [aircraftId], references: [id], onDelete: Restrict)
   exceedances         Exceedance[]
+  definitions         DetectionRunDefinition[]
 
-  @@unique([flightId, engineVersion, inputHash])
   @@index([flightId])
   @@index([aircraftId])
   @@index([status])
+  @@index([flightId, engineVersion, inputHash, sampleIntervalMs, ruleSetHash, status])
+}
+
+model DetectionRunDefinition {
+  detectionRunId     String
+  definitionId       String
+  definitionVersionId String
+  ruleHash           String
+  status             String
+  occurrenceCount    Int      @default(0)
+  diagnosticsJson    String
+  isCurrent          Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  supersededAt       DateTime?
+  detectionRun       DetectionRun @relation(fields: [detectionRunId], references: [id], onDelete: Cascade)
+  definition         EventDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+  definitionVersion  EventDefinitionVersion @relation(fields: [definitionVersionId], references: [id], onDelete: Cascade)
+
+  @@id([detectionRunId, definitionVersionId])
+  @@index([definitionId, isCurrent])
+  @@index([definitionVersionId])
 }
 
 model Notification {

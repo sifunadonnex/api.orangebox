@@ -105,6 +105,7 @@ GIN_MODE=release ./api-server
 | POST | `/api/csv` | Upload flight data |
 | GET | `/api/csv` | List all flights |
 | GET | `/api/csv/:id` | Download CSV |
+| POST | `/api/csv/:id/analyze` | Analyze a stored flight again without re-uploading |
 | DELETE | `/api/csv/:id` | Delete flight |
 
 ### Events & Exceedances
@@ -112,6 +113,7 @@ GIN_MODE=release ./api-server
 |--------|----------|-------------|
 | GET | `/api/events` | List events |
 | POST | `/api/events` | Create event |
+| POST | `/api/events/:id/backfill` | Apply the current published event to matching stored flights |
 | GET | `/api/exceedances` | List exceedances |
 | POST | `/api/exceedances` | Create exceedances |
 

@@ -101,26 +101,28 @@ type EventLog struct {
 
 // Exceedance represents an exceedance in the system
 type Exceedance struct {
-	ID               string    `json:"id" db:"id"`
-	ExceedanceValues string    `json:"exceedanceValues" db:"exceedanceValues"`
-	FlightPhase      string    `json:"flightPhase" db:"flightPhase"`
-	ParameterName    string    `json:"parameterName" db:"parameterName"`
-	Description      string    `json:"description" db:"description"`
-	EventStatus      string    `json:"eventStatus" db:"eventStatus"`
-	AircraftID       string    `json:"aircraftId" db:"aircraftId"`
-	FlightID         string    `json:"flightId" db:"flightId"`
-	File             *string   `json:"file" db:"file"`
-	EventID          *string   `json:"eventId" db:"eventId"`
-	Comment          *string   `json:"comment" db:"comment"`
-	ExceedanceLevel  *string   `json:"exceedanceLevel" db:"exceedanceLevel"`
-	DetectionRunID   *string   `json:"detectionRunId,omitempty" db:"detectionRunId"`
-	StartTimeMs      *int64    `json:"startTimeMs,omitempty" db:"startTimeMs"`
-	EndTimeMs        *int64    `json:"endTimeMs,omitempty" db:"endTimeMs"`
-	DurationMs       *int64    `json:"durationMs,omitempty" db:"durationMs"`
-	PeakValue        *float64  `json:"peakValue,omitempty" db:"peakValue"`
-	RuleHash         *string   `json:"ruleHash,omitempty" db:"ruleHash"`
-	CreatedAt        time.Time `json:"createdAt" db:"createdAt"`
-	UpdatedAt        time.Time `json:"updatedAt" db:"updatedAt"`
+	ID               string     `json:"id" db:"id"`
+	ExceedanceValues string     `json:"exceedanceValues" db:"exceedanceValues"`
+	FlightPhase      string     `json:"flightPhase" db:"flightPhase"`
+	ParameterName    string     `json:"parameterName" db:"parameterName"`
+	Description      string     `json:"description" db:"description"`
+	EventStatus      string     `json:"eventStatus" db:"eventStatus"`
+	AircraftID       string     `json:"aircraftId" db:"aircraftId"`
+	FlightID         string     `json:"flightId" db:"flightId"`
+	File             *string    `json:"file" db:"file"`
+	EventID          *string    `json:"eventId" db:"eventId"`
+	Comment          *string    `json:"comment" db:"comment"`
+	ExceedanceLevel  *string    `json:"exceedanceLevel" db:"exceedanceLevel"`
+	DetectionRunID   *string    `json:"detectionRunId,omitempty" db:"detectionRunId"`
+	StartTimeMs      *int64     `json:"startTimeMs,omitempty" db:"startTimeMs"`
+	EndTimeMs        *int64     `json:"endTimeMs,omitempty" db:"endTimeMs"`
+	DurationMs       *int64     `json:"durationMs,omitempty" db:"durationMs"`
+	PeakValue        *float64   `json:"peakValue,omitempty" db:"peakValue"`
+	RuleHash         *string    `json:"ruleHash,omitempty" db:"ruleHash"`
+	IsCurrent        bool       `json:"isCurrent" db:"isCurrent"`
+	SupersededAt     *time.Time `json:"supersededAt,omitempty" db:"supersededAt"`
+	CreatedAt        time.Time  `json:"createdAt" db:"createdAt"`
+	UpdatedAt        time.Time  `json:"updatedAt" db:"updatedAt"`
 	// Related data - populated via JOINs
 	AircraftRegistration *string   `json:"aircraftRegistration,omitempty"`
 	EventLog             *EventLog `json:"EventLog,omitempty"`

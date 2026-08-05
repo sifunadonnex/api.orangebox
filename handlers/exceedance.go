@@ -31,7 +31,8 @@ func (h *ExceedanceHandler) GetExceedances(c *gin.Context) {
 			  LEFT JOIN EventLog el ON e.eventId = el.id 
 			  LEFT JOIN Csv c ON e.flightId = c.id 
 			  LEFT JOIN Aircraft a ON e.aircraftId = a.id
-			  LEFT JOIN Company co ON a.companyId = co.id`
+			  LEFT JOIN Company co ON a.companyId = co.id
+			  WHERE e.isCurrent = 1`
 
 	rows, err := h.db.Query(query)
 	if err != nil {
@@ -326,7 +327,7 @@ func (h *ExceedanceHandler) GetExceedanceByID(c *gin.Context) {
 func (h *ExceedanceHandler) GetExceedancesByFlightID(c *gin.Context) {
 	flightID := c.Param("id")
 
-	query := `SELECT id, exceedanceValues, flightPhase, parameterName, description, eventStatus, aircraftId, flightId, file, eventId, comment, exceedanceLevel, createdAt, updatedAt FROM Exceedance WHERE flightId = ?`
+	query := `SELECT id, exceedanceValues, flightPhase, parameterName, description, eventStatus, aircraftId, flightId, file, eventId, comment, exceedanceLevel, createdAt, updatedAt FROM Exceedance WHERE flightId = ? AND isCurrent = 1`
 	rows, err := h.db.Query(query, flightID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
@@ -478,7 +479,7 @@ func (h *ExceedanceHandler) GetGlobalBenchmarks(c *gin.Context) {
 				SUM(CASE WHEN e.exceedanceLevel = 'Critical' THEN 1 ELSE 0 END) as severityCritical
 			FROM Aircraft a
 			LEFT JOIN Csv csv ON csv.aircraftId = a.id
-			LEFT JOIN Exceedance e ON e.flightId = csv.id
+			LEFT JOIN Exceedance e ON e.flightId = csv.id AND e.isCurrent = 1
 			WHERE a.aircraftMake = ? OR a.modelNumber = ?
 			GROUP BY a.aircraftMake, a.modelNumber`
 		rows, err = h.db.Query(modelQuery, aircraftModel, aircraftModel)
@@ -496,7 +497,7 @@ func (h *ExceedanceHandler) GetGlobalBenchmarks(c *gin.Context) {
 				SUM(CASE WHEN e.exceedanceLevel = 'Critical' THEN 1 ELSE 0 END) as severityCritical
 			FROM Aircraft a
 			LEFT JOIN Csv csv ON csv.aircraftId = a.id
-			LEFT JOIN Exceedance e ON e.flightId = csv.id
+			LEFT JOIN Exceedance e ON e.flightId = csv.id AND e.isCurrent = 1
 			GROUP BY a.aircraftMake, a.modelNumber`
 		rows, err = h.db.Query(modelQuery)
 	}
@@ -595,6 +596,7 @@ func (h *ExceedanceHandler) GetGlobalBenchmarks(c *gin.Context) {
 			COUNT(*) as count
 		FROM Exceedance e
 		LEFT JOIN EventLog el ON e.eventId = el.id
+		WHERE e.isCurrent = 1
 		GROUP BY eventName
 		ORDER BY count DESC
 		LIMIT 20`

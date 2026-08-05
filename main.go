@@ -157,6 +157,7 @@ func main() {
 		{
 			csvs.POST("", middleware.GatekeeperOrAbove(), csvHandler.UploadCSV)
 			csvs.GET("", middleware.AnyAuthenticatedUser(), csvHandler.GetCSVs)
+			csvs.POST("/:id/analyze", middleware.GatekeeperOrAbove(), csvHandler.ReanalyzeCSV)
 			csvs.GET("/:id", middleware.AnyAuthenticatedUser(), csvHandler.DownloadCSV)
 			csvs.DELETE("/:id", middleware.AdminOrFDA(), csvHandler.DeleteCSV)
 		}
@@ -172,6 +173,7 @@ func main() {
 			events.PUT("/:id", middleware.AdminOrFDA(), eventHandler.UpdateEvent)
 			events.POST("/:id/validate", middleware.AdminOrFDA(), eventHandler.ValidateEventVersion)
 			events.POST("/:id/publish", middleware.AdminOrFDA(), eventHandler.PublishEventVersion)
+			events.POST("/:id/backfill", middleware.AdminOrFDA(), csvHandler.BackfillEvent)
 			events.DELETE("/:id", middleware.AdminOrFDA(), eventHandler.DeleteEvent)
 		}
 
