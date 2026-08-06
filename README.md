@@ -105,6 +105,7 @@ GIN_MODE=release ./api-server
 | POST | `/api/csv` | Upload flight data |
 | GET | `/api/csv` | List all flights |
 | GET | `/api/csv/:id` | Download CSV |
+| GET | `/api/csv/:id/replay` | Get a normalized, capability-driven replay track |
 | POST | `/api/csv/:id/analyze` | Analyze a stored flight again without re-uploading |
 | DELETE | `/api/csv/:id` | Delete flight |
 

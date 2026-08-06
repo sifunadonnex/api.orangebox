@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"fdm-backend/detection"
 	"fdm-backend/models"
 
 	"github.com/gin-gonic/gin"
@@ -30,6 +31,41 @@ type eventBackfillResponse struct {
 	FailedCount        int                    `json:"failedCount"`
 	OccurrenceCount    int                    `json:"occurrenceCount"`
 	Results            []backfillFlightResult `json:"results"`
+}
+
+// GetFlightReplay returns a capability-driven, normalized replay track for a
+// stored flight. Missing optional parameters do not make a flight unsupported.
+func (h *CSVHandler) GetFlightReplay(c *gin.Context) {
+	flight, aircraft, err := h.getStoredFlight(c.Param("id"))
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Flight not found"})
+		return
+	}
+	if err != nil {
+		respondDatabaseError(c, err)
+		return
+	}
+	if !isSystemEventRole(c) {
+		companyID, ok := contextString(c, "userCompanyId")
+		if !ok || companyID != aircraft.CompanyID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "You cannot access this flight replay"})
+			return
+		}
+	}
+	path, err := storedCSVPath(flight.File)
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	replay, err := detection.BuildReplay(path, detection.ReplayOptions{
+		SampleIntervalMs: valueOrZeroInt64(flight.SampleIntervalMs),
+		MaxPoints:        10000,
+	})
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": replay})
 }
 
 // ReanalyzeCSV evaluates a stored flight without requiring its source file to

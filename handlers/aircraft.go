@@ -18,23 +18,6 @@ func NewAircraftHandler(db *sql.DB) *AircraftHandler {
 	return &AircraftHandler{db: db}
 }
 
-// Helper function to parse timestamp strings from SQLite
-func parseTimestamp(timeStr string) (time.Time, error) {
-	// Try Go's time.Time string format first (what's in the DB)
-	if t, err := time.Parse("2006-01-02 15:04:05.999999999 -0700 MST", timeStr); err == nil {
-		return t, nil
-	}
-	// Fallback to RFC3339
-	if t, err := time.Parse(time.RFC3339, timeStr); err == nil {
-		return t, nil
-	}
-	// Fallback to simple datetime format
-	if t, err := time.Parse("2006-01-02 15:04:05", timeStr); err == nil {
-		return t, nil
-	}
-	return time.Time{}, nil
-}
-
 // GetAircrafts retrieves all aircraft with related data
 func (h *AircraftHandler) GetAircrafts(c *gin.Context) {
 	query := `SELECT id, airline, aircraftMake, modelNumber, serialNumber, registration, companyId, parameters, createdAt, updatedAt FROM Aircraft`

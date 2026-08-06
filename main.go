@@ -158,6 +158,7 @@ func main() {
 			csvs.POST("", middleware.GatekeeperOrAbove(), csvHandler.UploadCSV)
 			csvs.GET("", middleware.AnyAuthenticatedUser(), csvHandler.GetCSVs)
 			csvs.POST("/:id/analyze", middleware.GatekeeperOrAbove(), csvHandler.ReanalyzeCSV)
+			csvs.GET("/:id/replay", middleware.AnyAuthenticatedUser(), csvHandler.GetFlightReplay)
 			csvs.GET("/:id", middleware.AnyAuthenticatedUser(), csvHandler.DownloadCSV)
 			csvs.DELETE("/:id", middleware.AdminOrFDA(), csvHandler.DeleteCSV)
 		}

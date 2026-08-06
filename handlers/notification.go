@@ -104,7 +104,7 @@ func (h *NotificationHandler) GetUserNotifications(c *gin.Context) {
 	var notifications []models.Notification
 	for rows.Next() {
 		var notification models.Notification
-		var createdAt, updatedAt sql.NullTime
+		var createdAt, updatedAt nullableTimestamp
 
 		err := rows.Scan(&notification.ID, &notification.UserID,
 			&notification.ExceedanceID, &notification.Message,

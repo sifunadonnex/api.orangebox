@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"fdm-backend/models"
@@ -283,7 +284,7 @@ func looksLikeUnitsRow(values map[string]string) bool {
 
 func timestampRows(rows []rawRow, intervalMs int64) ([]frame, string, []Diagnostic, error) {
 	candidates := make([]candidate, 0)
-	for _, alias := range []string{"TIMEELAPSED", "TIMESEC", "ELAPSEDTIME", "SECONDS"} {
+	for _, alias := range []string{"TIMEELAPSED", "TIMESEC", "ELAPSEDTIME", "ELAPSEDSECONDS", "TIMESTAMPSEC", "FLIGHTTIME", "SECONDS"} {
 		item := candidate{name: strings.ToLower(alias), times: make([]int64, len(rows)), valid: make([]bool, len(rows))}
 		for i, row := range rows {
 			if value := row.values[alias]; value != "" {
@@ -301,6 +302,8 @@ func timestampRows(rows []rawRow, intervalMs int64) ([]frame, string, []Diagnost
 		}
 	}
 	candidates = append(candidates, minutes)
+	dateTime := buildDateTime(rows)
+	candidates = append(candidates, dateTime)
 	gmt := buildGMTTime(rows)
 	candidates = append(candidates, gmt)
 	sample := buildSampleTime(rows, intervalMs)
@@ -333,6 +336,45 @@ func timestampRows(rows []rawRow, intervalMs int64) ([]frame, string, []Diagnost
 		return nil, selected.name, diagnostics, errors.New("CSV has no timestamped data rows")
 	}
 	return frames, selected.name, diagnostics, nil
+}
+
+func buildDateTime(rows []rawRow) candidate {
+	item := candidate{name: "date_time", times: make([]int64, len(rows)), valid: make([]bool, len(rows))}
+	var base time.Time
+	for i, row := range rows {
+		dateValue := firstValue(row.values, "LCLDATE", "LOCALDATE", "UTCDATE", "DATE")
+		timeValue := firstValue(row.values, "LCLTIME", "LOCALTIME", "UTCTIME", "TIME")
+		if dateValue == "" || timeValue == "" {
+			continue
+		}
+		parsed, ok := parseDateTime(dateValue, timeValue)
+		if !ok {
+			continue
+		}
+		if base.IsZero() {
+			base = parsed
+		}
+		item.times[i] = parsed.Sub(base).Milliseconds()
+		item.valid[i] = true
+	}
+	return item
+}
+
+func parseDateTime(dateValue, timeValue string) (time.Time, bool) {
+	combined := strings.TrimSpace(dateValue) + " " + strings.TrimSpace(timeValue)
+	for _, layout := range []string{
+		"1/2/2006 15:04:05.999999999",
+		"1/2/2006 15:04:05",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05",
+		"2/1/2006 15:04:05.999999999",
+		"2/1/2006 15:04:05",
+	} {
+		if parsed, err := time.ParseInLocation(layout, combined, time.UTC); err == nil {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func parseSeconds(value string) (int64, bool) {

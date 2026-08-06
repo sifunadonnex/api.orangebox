@@ -106,6 +106,20 @@ func TestAnalyzeFileRejectsFrozenElapsedClockAndFallsBackToSample(t *testing.T) 
 	}
 }
 
+func TestAnalyzeFileUsesCombinedLocalDateAndTime(t *testing.T) {
+	path := writeTestCSV(t, "Lcl Date,Lcl Time,Latitude,Longitude,Phase,AIRSPEED\n"+
+		"6/4/2025,06:38:16,-1.3,36.8,GROUND,0\n"+
+		"6/4/2025,06:38:17,-1.3,36.8,TAKEOFF,110\n"+
+		"6/4/2025,06:38:18,-1.2,36.7,CLIMB,120\n")
+	result, err := AnalyzeFile(path, nil, Options{SampleIntervalMs: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TimingSource != "date_time" || result.RowCount != 3 {
+		t.Fatalf("unexpected date/time result: %#v", result)
+	}
+}
+
 func numericRule(parameter, operator string, threshold float64) models.EventRule {
 	return models.EventRule{
 		SchemaVersion: 1,
