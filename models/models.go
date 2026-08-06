@@ -128,6 +128,26 @@ type Exceedance struct {
 	EventLog             *EventLog `json:"EventLog,omitempty"`
 }
 
+const (
+	ExceedanceStatusPending  = "Pending"
+	ExceedanceStatusValid    = "Valid"
+	ExceedanceStatusNuisance = "Nuisance"
+	ExceedanceStatusFalse    = "False"
+)
+
+// ExceedanceReview is an append-only audit entry for an occurrence review.
+type ExceedanceReview struct {
+	ID             string    `json:"id" db:"id"`
+	ExceedanceID   string    `json:"exceedanceId" db:"exceedanceId"`
+	Action         string    `json:"action" db:"action"`
+	PreviousStatus *string   `json:"previousStatus,omitempty" db:"previousStatus"`
+	NewStatus      *string   `json:"newStatus,omitempty" db:"newStatus"`
+	Comment        string    `json:"comment" db:"comment"`
+	ReviewedBy     string    `json:"reviewedBy" db:"reviewedBy"`
+	ReviewerName   *string   `json:"reviewerName,omitempty"`
+	CreatedAt      time.Time `json:"createdAt" db:"createdAt"`
+}
+
 // Request/Response DTOs
 
 // LoginRequest represents the login request payload
@@ -244,6 +264,11 @@ type UpdateEventRequest struct {
 
 // UpdateExceedanceRequest represents the update exceedance request payload
 type UpdateExceedanceRequest struct {
-	Comment     *string `json:"comment,omitempty"`
+	Comment     *string `json:"comment" binding:"required"`
 	EventStatus string  `json:"eventStatus" binding:"required"`
+}
+
+// ArchiveExceedanceRequest requires a reviewer-supplied audit reason.
+type ArchiveExceedanceRequest struct {
+	Reason string `json:"reason" binding:"required"`
 }

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -20,12 +21,43 @@ func NewExceedanceHandler(db *sql.DB) *ExceedanceHandler {
 	return &ExceedanceHandler{db: db}
 }
 
+// accessFilter keeps tenant and visibility rules in the database query. The
+// frontend may narrow results further, but it is never the security boundary.
+func accessFilter(c *gin.Context) (string, []interface{}, bool) {
+	roleValue, roleExists := c.Get("userRole")
+	role, roleOK := roleValue.(string)
+	if !roleExists || !roleOK {
+		return "", nil, false
+	}
+
+	if role == models.RoleAdmin || role == models.RoleFDA {
+		return "", nil, true
+	}
+
+	companyValue, companyExists := c.Get("userCompanyId")
+	companyID, companyOK := companyValue.(string)
+	if !companyExists || !companyOK || strings.TrimSpace(companyID) == "" {
+		return "", nil, false
+	}
+
+	return " AND a.companyId = ? AND e.eventStatus = ?", []interface{}{companyID, models.ExceedanceStatusValid}, true
+}
+
+func isValidExceedanceStatus(status string) bool {
+	switch status {
+	case models.ExceedanceStatusPending, models.ExceedanceStatusValid, models.ExceedanceStatusNuisance, models.ExceedanceStatusFalse:
+		return true
+	default:
+		return false
+	}
+}
+
 // GetExceedances retrieves all exceedances with related data
 func (h *ExceedanceHandler) GetExceedances(c *gin.Context) {
-	query := `SELECT e.id, COALESCE(e.exceedanceValues, '') as exceedanceValues, COALESCE(e.flightPhase, '') as flightPhase, COALESCE(e.parameterName, '') as parameterName, COALESCE(e.description, '') as description, COALESCE(e.eventStatus, '') as eventStatus, COALESCE(e.aircraftId, '') as aircraftId, COALESCE(e.flightId, '') as flightId, e.file, e.eventId, e.comment, e.exceedanceLevel, e.createdAt, e.updatedAt,
+	query := `SELECT e.id, COALESCE(e.exceedanceValues, '') as exceedanceValues, COALESCE(e.flightPhase, '') as flightPhase, COALESCE(e.parameterName, '') as parameterName, COALESCE(e.description, '') as description, COALESCE(e.eventStatus, '') as eventStatus, COALESCE(e.aircraftId, '') as aircraftId, COALESCE(e.flightId, '') as flightId, e.file, e.eventId, e.comment, e.exceedanceLevel, e.detectionRunId, e.startTimeMs, e.endTimeMs, e.durationMs, e.peakValue, e.ruleHash, e.isCurrent, e.createdAt, e.updatedAt,
 			  el.id as eventlog_id, el.eventName, COALESCE(el.displayName, '') as displayName, COALESCE(el.eventCode, '') as eventCode, COALESCE(el.eventDescription, '') as eventDescription, COALESCE(el.eventParameter, '') as eventParameter, COALESCE(el.eventTrigger, '') as eventTrigger, COALESCE(el.eventType, '') as eventType, COALESCE(el.flightPhase, '') as eventlog_flightPhase, el.high, el.high1, el.high2, el.low, el.low1, el.low2, el.triggerType, el.detectionPeriod, el.severities, COALESCE(el.sop, '') as sop, COALESCE(el.aircraftId, '') as eventlog_aircraftId, el.createdAt as eventlog_createdAt, el.updatedAt as eventlog_updatedAt,
 			  c.id as csv_id, COALESCE(c.name, '') as name, COALESCE(c.file, '') as csv_file, c.status, c.departure, c.pilot, c.destination, c.flightHours, COALESCE(c.aircraftId, '') as csv_aircraftId, c.createdAt as csv_createdAt, c.updatedAt as csv_updatedAt,
-			  a.id as aircraft_id, COALESCE(a.airline, '') as airline, COALESCE(a.aircraftMake, '') as aircraftMake, a.modelNumber, COALESCE(a.serialNumber, '') as serialNumber, COALESCE(a.companyId, '') as companyId, a.parameters, a.createdAt as aircraft_createdAt, a.updatedAt as aircraft_updatedAt,
+			  a.id as aircraft_id, COALESCE(a.airline, '') as airline, COALESCE(a.aircraftMake, '') as aircraftMake, a.modelNumber, COALESCE(a.serialNumber, '') as serialNumber, a.registration, COALESCE(a.companyId, '') as companyId, a.parameters, a.createdAt as aircraft_createdAt, a.updatedAt as aircraft_updatedAt,
 			  co.id as company_id, COALESCE(co.name, '') as company_name, COALESCE(co.email, '') as company_email, co.phone as company_phone, co.address as company_address, co.country as company_country, co.logo as company_logo, COALESCE(co.status, '') as company_status, co.subscriptionId as company_subscriptionId, co.createdAt as company_createdAt, co.updatedAt as company_updatedAt
 			  FROM Exceedance e 
 			  LEFT JOIN EventLog el ON e.eventId = el.id 
@@ -34,7 +66,14 @@ func (h *ExceedanceHandler) GetExceedances(c *gin.Context) {
 			  LEFT JOIN Company co ON a.companyId = co.id
 			  WHERE e.isCurrent = 1`
 
-	rows, err := h.db.Query(query)
+	filter, args, allowed := accessFilter(c)
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": "No company access is assigned to this account"})
+		return
+	}
+	query += filter + " ORDER BY e.createdAt DESC"
+
+	rows, err := h.db.Query(query, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
@@ -63,7 +102,9 @@ func (h *ExceedanceHandler) GetExceedances(c *gin.Context) {
 		err := rows.Scan(&exceedance.ID, &exceedance.ExceedanceValues, &exceedance.FlightPhase,
 			&exceedance.ParameterName, &exceedance.Description, &exceedance.EventStatus,
 			&exceedance.AircraftID, &exceedance.FlightID, &exceedance.File, &exceedance.EventID,
-			&exceedance.Comment, &exceedance.ExceedanceLevel, &exceedanceCreatedAt, &exceedanceUpdatedAt,
+			&exceedance.Comment, &exceedance.ExceedanceLevel, &exceedance.DetectionRunID,
+			&exceedance.StartTimeMs, &exceedance.EndTimeMs, &exceedance.DurationMs,
+			&exceedance.PeakValue, &exceedance.RuleHash, &exceedance.IsCurrent, &exceedanceCreatedAt, &exceedanceUpdatedAt,
 			&eventLogID, &eventLog.EventName, &eventLog.DisplayName, &eventLog.EventCode,
 			&eventLog.EventDescription, &eventLog.EventParameter, &eventLog.EventTrigger, &eventLog.EventType,
 			&eventLog.FlightPhase, &eventLog.High, &eventLog.High1, &eventLog.High2, &eventLog.Low,
@@ -71,7 +112,7 @@ func (h *ExceedanceHandler) GetExceedances(c *gin.Context) {
 			&csvID, &csv.Name, &csv.File, &csv.Status, &csv.Departure, &csv.Pilot,
 			&csv.Destination, &csv.FlightHours, &csv.AircraftID, &csvCreatedAt, &csvUpdatedAt,
 			&aircraftID, &aircraft.Airline, &aircraft.AircraftMake, &aircraft.ModelNumber,
-			&aircraft.SerialNumber, &aircraft.CompanyID, &aircraft.Parameters, &aircraftCreatedAt, &aircraftUpdatedAt,
+			&aircraft.SerialNumber, &aircraft.Registration, &aircraft.CompanyID, &aircraft.Parameters, &aircraftCreatedAt, &aircraftUpdatedAt,
 			&companyID, &company.Name, &company.Email, &company.Phone, &company.Address, &company.Country, &company.Logo, &company.Status, &company.SubscriptionID, &companyCreatedAt, &companyUpdatedAt)
 
 		if err != nil {
@@ -163,17 +204,25 @@ func (h *ExceedanceHandler) GetExceedances(c *gin.Context) {
 func (h *ExceedanceHandler) GetExceedanceByID(c *gin.Context) {
 	id := c.Param("id")
 
-	query := `SELECT e.id, COALESCE(e.exceedanceValues, '') as exceedanceValues, COALESCE(e.flightPhase, '') as flightPhase, COALESCE(e.parameterName, '') as parameterName, COALESCE(e.description, '') as description, COALESCE(e.eventStatus, '') as eventStatus, COALESCE(e.aircraftId, '') as aircraftId, COALESCE(e.flightId, '') as flightId, e.file, e.eventId, e.comment, e.exceedanceLevel, e.createdAt, e.updatedAt,
+	query := `SELECT e.id, COALESCE(e.exceedanceValues, '') as exceedanceValues, COALESCE(e.flightPhase, '') as flightPhase, COALESCE(e.parameterName, '') as parameterName, COALESCE(e.description, '') as description, COALESCE(e.eventStatus, '') as eventStatus, COALESCE(e.aircraftId, '') as aircraftId, COALESCE(e.flightId, '') as flightId, e.file, e.eventId, e.comment, e.exceedanceLevel, e.detectionRunId, e.startTimeMs, e.endTimeMs, e.durationMs, e.peakValue, e.ruleHash, e.isCurrent, e.createdAt, e.updatedAt,
 			  el.id as eventlog_id, el.eventName, COALESCE(el.displayName, '') as displayName, COALESCE(el.eventCode, '') as eventCode, COALESCE(el.eventDescription, '') as eventDescription, COALESCE(el.eventParameter, '') as eventParameter, COALESCE(el.eventTrigger, '') as eventTrigger, COALESCE(el.eventType, '') as eventType, COALESCE(el.flightPhase, '') as eventlog_flightPhase, el.high, el.high1, el.high2, el.low, el.low1, el.low2, el.triggerType, el.detectionPeriod, el.severities, COALESCE(el.sop, '') as sop, COALESCE(el.aircraftId, '') as eventlog_aircraftId, el.createdAt as eventlog_createdAt, el.updatedAt as eventlog_updatedAt,
 			  c.id as csv_id, COALESCE(c.name, '') as name, COALESCE(c.file, '') as csv_file, c.status, c.departure, c.pilot, c.destination, c.flightHours, COALESCE(c.aircraftId, '') as csv_aircraftId, c.createdAt as csv_createdAt, c.updatedAt as csv_updatedAt,
-			  a.id as aircraft_id, COALESCE(a.airline, '') as airline, COALESCE(a.aircraftMake, '') as aircraftMake, a.modelNumber, COALESCE(a.serialNumber, '') as serialNumber, COALESCE(a.companyId, '') as companyId, a.parameters, a.createdAt as aircraft_createdAt, a.updatedAt as aircraft_updatedAt,
+			  a.id as aircraft_id, COALESCE(a.airline, '') as airline, COALESCE(a.aircraftMake, '') as aircraftMake, a.modelNumber, COALESCE(a.serialNumber, '') as serialNumber, a.registration, COALESCE(a.companyId, '') as companyId, a.parameters, a.createdAt as aircraft_createdAt, a.updatedAt as aircraft_updatedAt,
 			  co.id as company_id, COALESCE(co.name, '') as company_name, COALESCE(co.email, '') as company_email, co.phone as company_phone, co.address as company_address, co.country as company_country, co.logo as company_logo, COALESCE(co.status, '') as company_status, co.subscriptionId as company_subscriptionId, co.createdAt as company_createdAt, co.updatedAt as company_updatedAt
 			  FROM Exceedance e 
 			  LEFT JOIN EventLog el ON e.eventId = el.id 
 			  LEFT JOIN Csv c ON e.flightId = c.id 
 			  LEFT JOIN Aircraft a ON e.aircraftId = a.id 
 			  LEFT JOIN Company co ON a.companyId = co.id
-			  WHERE e.id = ?`
+			  WHERE e.id = ? AND e.isCurrent = 1`
+
+	filter, accessArgs, allowed := accessFilter(c)
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": "No company access is assigned to this account"})
+		return
+	}
+	query += filter
+	queryArgs := append([]interface{}{id}, accessArgs...)
 
 	var exceedance models.Exceedance
 	var eventLog models.EventLog
@@ -192,11 +241,13 @@ func (h *ExceedanceHandler) GetExceedanceByID(c *gin.Context) {
 	var companyID sql.NullString
 	var companyCreatedAtStr, companyUpdatedAtStr sql.NullString
 
-	row := h.db.QueryRow(query, id)
+	row := h.db.QueryRow(query, queryArgs...)
 	err := row.Scan(&exceedance.ID, &exceedance.ExceedanceValues, &exceedance.FlightPhase,
 		&exceedance.ParameterName, &exceedance.Description, &exceedance.EventStatus,
 		&exceedance.AircraftID, &exceedance.FlightID, &exceedance.File, &exceedance.EventID,
-		&exceedance.Comment, &exceedance.ExceedanceLevel, &exceedanceCreatedAtStr, &exceedanceUpdatedAtStr,
+		&exceedance.Comment, &exceedance.ExceedanceLevel, &exceedance.DetectionRunID,
+		&exceedance.StartTimeMs, &exceedance.EndTimeMs, &exceedance.DurationMs,
+		&exceedance.PeakValue, &exceedance.RuleHash, &exceedance.IsCurrent, &exceedanceCreatedAtStr, &exceedanceUpdatedAtStr,
 		&eventLogID, &eventLog.EventName, &eventLog.DisplayName, &eventLog.EventCode,
 		&eventLog.EventDescription, &eventLog.EventParameter, &eventLog.EventTrigger, &eventLog.EventType,
 		&eventLog.FlightPhase, &eventLog.High, &eventLog.High1, &eventLog.High2, &eventLog.Low,
@@ -204,7 +255,7 @@ func (h *ExceedanceHandler) GetExceedanceByID(c *gin.Context) {
 		&csvID, &csv.Name, &csv.File, &csv.Status, &csv.Departure, &csv.Pilot,
 		&csv.Destination, &csv.FlightHours, &csv.AircraftID, &csvCreatedAtStr, &csvUpdatedAtStr,
 		&aircraftID, &aircraft.Airline, &aircraft.AircraftMake, &aircraft.ModelNumber,
-		&aircraft.SerialNumber, &aircraft.CompanyID, &aircraft.Parameters, &aircraftCreatedAtStr, &aircraftUpdatedAtStr,
+		&aircraft.SerialNumber, &aircraft.Registration, &aircraft.CompanyID, &aircraft.Parameters, &aircraftCreatedAtStr, &aircraftUpdatedAtStr,
 		&companyID, &company.Name, &company.Email, &company.Phone, &company.Address, &company.Country, &company.Logo, &company.Status, &company.SubscriptionID, &companyCreatedAtStr, &companyUpdatedAtStr)
 
 	if err == sql.ErrNoRows {
@@ -308,16 +359,25 @@ func (h *ExceedanceHandler) GetExceedanceByID(c *gin.Context) {
 		aircraft.Company = companyPtr
 	}
 
+	reviews, err := h.getExceedanceReviews(id)
+	if err != nil {
+		log.Printf("Error loading exceedance reviews: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error loading exceedance review history"})
+		return
+	}
+
 	response := struct {
 		models.Exceedance
-		EventLog *models.EventLog `json:"eventlog"`
-		CSV      models.CSV       `json:"csv"`
-		Aircraft models.Aircraft  `json:"aircraft"`
+		EventLog *models.EventLog          `json:"eventlog"`
+		CSV      models.CSV                `json:"csv"`
+		Aircraft models.Aircraft           `json:"aircraft"`
+		Reviews  []models.ExceedanceReview `json:"reviews"`
 	}{
 		Exceedance: exceedance,
 		EventLog:   eventLogPtr,
 		CSV:        csv,
 		Aircraft:   aircraft,
+		Reviews:    reviews,
 	}
 
 	c.JSON(http.StatusOK, response)
@@ -327,10 +387,17 @@ func (h *ExceedanceHandler) GetExceedanceByID(c *gin.Context) {
 func (h *ExceedanceHandler) GetExceedancesByFlightID(c *gin.Context) {
 	flightID := c.Param("id")
 
-	query := `SELECT id, exceedanceValues, flightPhase, parameterName, description, eventStatus, aircraftId, flightId, file, eventId, comment, exceedanceLevel,
-		detectionRunId, startTimeMs, endTimeMs, durationMs, peakValue, ruleHash, isCurrent, createdAt, updatedAt
-		FROM Exceedance WHERE flightId = ? AND isCurrent = 1`
-	rows, err := h.db.Query(query, flightID)
+	query := `SELECT e.id, e.exceedanceValues, e.flightPhase, e.parameterName, e.description, e.eventStatus, e.aircraftId, e.flightId, e.file, e.eventId, e.comment, e.exceedanceLevel,
+		e.detectionRunId, e.startTimeMs, e.endTimeMs, e.durationMs, e.peakValue, e.ruleHash, e.isCurrent, e.createdAt, e.updatedAt
+		FROM Exceedance e JOIN Aircraft a ON a.id = e.aircraftId WHERE e.flightId = ? AND e.isCurrent = 1`
+	filter, accessArgs, allowed := accessFilter(c)
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": "No company access is assigned to this account"})
+		return
+	}
+	query += filter + " ORDER BY e.startTimeMs, e.createdAt"
+	queryArgs := append([]interface{}{flightID}, accessArgs...)
+	rows, err := h.db.Query(query, queryArgs...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
@@ -421,43 +488,157 @@ func (h *ExceedanceHandler) UpdateExceedance(c *gin.Context) {
 		return
 	}
 
-	now := time.Now()
+	comment := ""
+	if req.Comment != nil {
+		comment = strings.TrimSpace(*req.Comment)
+	}
+	if comment == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "A reviewer comment is required"})
+		return
+	}
+	if !isValidExceedanceStatus(req.EventStatus) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid exceedance status", "allowed": []string{
+			models.ExceedanceStatusPending,
+			models.ExceedanceStatusValid,
+			models.ExceedanceStatusNuisance,
+			models.ExceedanceStatusFalse,
+		}})
+		return
+	}
 
-	query := `UPDATE Exceedance SET comment = ?, eventStatus = ?, updatedAt = ? WHERE id = ?`
-	result, err := h.db.Exec(query, req.Comment, req.EventStatus, now.UnixMilli(), id)
+	userIDValue, ok := c.Get("userId")
+	userID, userIDOK := userIDValue.(string)
+	if !ok || !userIDOK || strings.TrimSpace(userID) == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Reviewer identity is unavailable"})
+		return
+	}
+
+	tx, err := h.db.Begin()
 	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error starting exceedance review"})
+		return
+	}
+	defer tx.Rollback()
+
+	var previousStatus string
+	if err = tx.QueryRow("SELECT eventStatus FROM Exceedance WHERE id = ? AND isCurrent = 1", id).Scan(&previousStatus); err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Exceedance not found"})
+		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error loading exceedance"})
+		return
+	}
+	if previousStatus == req.EventStatus {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Select a status different from the current status"})
+		return
+	}
+
+	now := time.Now()
+	if _, err = tx.Exec(`UPDATE Exceedance SET comment = ?, eventStatus = ?, updatedAt = ? WHERE id = ? AND isCurrent = 1`,
+		comment, req.EventStatus, now.UnixMilli(), id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating exceedance"})
 		return
 	}
-
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Exceedance not found"})
+	if _, err = tx.Exec(`INSERT INTO ExceedanceReview
+		(id, exceedanceId, action, previousStatus, newStatus, comment, reviewedBy, createdAt)
+		VALUES (?, ?, 'status_change', ?, ?, ?, ?, ?)`,
+		uuid.NewString(), id, previousStatus, req.EventStatus, comment, userID, now.UnixMilli()); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error recording exceedance review"})
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error committing exceedance review"})
 		return
 	}
 
-	// Return updated exceedance
-	h.GetExceedanceByID(c)
+	c.JSON(http.StatusOK, gin.H{
+		"success":     true,
+		"message":     "Exceedance review recorded successfully",
+		"id":          id,
+		"eventStatus": req.EventStatus,
+	})
 }
 
-// DeleteExceedance deletes an exceedance
+// DeleteExceedance archives an exceedance while retaining its evidence and audit history.
 func (h *ExceedanceHandler) DeleteExceedance(c *gin.Context) {
 	id := c.Param("id")
-
-	query := `DELETE FROM Exceedance WHERE id = ?`
-	result, err := h.db.Exec(query, id)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error deleting exceedance"})
+	var req models.ArchiveExceedanceRequest
+	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.Reason) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "An archive reason is required"})
 		return
 	}
 
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
+	userIDValue, ok := c.Get("userId")
+	userID, userIDOK := userIDValue.(string)
+	if !ok || !userIDOK || strings.TrimSpace(userID) == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Reviewer identity is unavailable"})
+		return
+	}
+
+	tx, err := h.db.Begin()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error starting archive operation"})
+		return
+	}
+	defer tx.Rollback()
+
+	var previousStatus string
+	if err = tx.QueryRow("SELECT eventStatus FROM Exceedance WHERE id = ? AND isCurrent = 1", id).Scan(&previousStatus); err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Exceedance not found"})
 		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error loading exceedance"})
+		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Exceedance deleted successfully"})
+	now := time.Now()
+	if _, err = tx.Exec(`UPDATE Exceedance SET isCurrent = 0, supersededAt = ?, updatedAt = ? WHERE id = ? AND isCurrent = 1`,
+		now.UnixMilli(), now.UnixMilli(), id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error archiving exceedance"})
+		return
+	}
+	if _, err = tx.Exec(`INSERT INTO ExceedanceReview
+		(id, exceedanceId, action, previousStatus, newStatus, comment, reviewedBy, createdAt)
+		VALUES (?, ?, 'archive', ?, NULL, ?, ?, ?)`,
+		uuid.NewString(), id, previousStatus, strings.TrimSpace(req.Reason), userID, now.UnixMilli()); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error recording archive history"})
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error committing archive operation"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Exceedance archived successfully"})
+}
+
+func (h *ExceedanceHandler) getExceedanceReviews(exceedanceID string) ([]models.ExceedanceReview, error) {
+	rows, err := h.db.Query(`SELECT r.id, r.exceedanceId, r.action, r.previousStatus, r.newStatus,
+		r.comment, r.reviewedBy, COALESCE(u.fullName, u.email, 'Unknown reviewer'), r.createdAt
+		FROM ExceedanceReview r LEFT JOIN User u ON u.id = r.reviewedBy
+		WHERE r.exceedanceId = ? ORDER BY r.createdAt DESC`, exceedanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	reviews := make([]models.ExceedanceReview, 0)
+	for rows.Next() {
+		var review models.ExceedanceReview
+		var createdAt nullableTimestamp
+		var reviewerName string
+		if err = rows.Scan(&review.ID, &review.ExceedanceID, &review.Action, &review.PreviousStatus,
+			&review.NewStatus, &review.Comment, &review.ReviewedBy, &reviewerName, &createdAt); err != nil {
+			return nil, err
+		}
+		if createdAt.Valid {
+			review.CreatedAt = createdAt.Time
+		}
+		review.ReviewerName = &reviewerName
+		reviews = append(reviews, review)
+	}
+
+	return reviews, rows.Err()
 }
 
 // GetGlobalBenchmarks returns aggregated benchmarking data across all clients
