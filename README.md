@@ -108,6 +108,26 @@ GIN_MODE=release ./api-server
 | GET | `/api/csv/:id/replay` | Get a normalized, capability-driven replay track |
 | POST | `/api/csv/:id/analyze` | Analyze a stored flight again without re-uploading |
 | DELETE | `/api/csv/:id` | Delete flight |
+| GET | `/api/recordings/:id` | Review every flight and row boundary in a source recording |
+| PUT | `/api/recordings/:id/flights` | Atomically update flight metadata and row boundaries |
+| DELETE | `/api/recordings/:id` | Delete a recording after exact-name confirmation |
+
+### Multi-flight recordings
+
+An uploaded `Csv` is the immutable source recording. `FlightLeg` rows identify
+one or more logical flights inside that recording by inclusive source-row
+boundaries, so replay, charts, re-analysis, and exceedances operate on one
+flight without duplicating the CSV file.
+
+Uploads currently split on high-confidence recorder evidence: changes in an
+explicit flight/session identifier, sample/frame counter resets, or unusually
+large counter discontinuities. A continuous recording without one of those
+signals remains a single flight until phase-based flight detection is added.
+When several flights are found, route, pilot, and duration metadata are left
+unset on each leg for review instead of copying potentially incorrect values.
+Boundary edits must still cover every usable CSV data row exactly once and may
+not overlap. Editing a boundary archives that flight's current findings and
+marks it for re-analysis; metadata-only edits preserve existing results.
 
 ### Events & Exceedances
 | Method | Endpoint | Description |

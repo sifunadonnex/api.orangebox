@@ -33,13 +33,10 @@ func accessFilter(c *gin.Context) (string, []interface{}, bool) {
 	if role == models.RoleAdmin || role == models.RoleFDA {
 		return "", nil, true
 	}
-
-	companyValue, companyExists := c.Get("userCompanyId")
-	companyID, companyOK := companyValue.(string)
-	if !companyExists || !companyOK || strings.TrimSpace(companyID) == "" {
+	companyID, companyOK := tenantCompanyID(c)
+	if !companyOK {
 		return "", nil, false
 	}
-
 	return " AND a.companyId = ? AND e.eventStatus = ?", []interface{}{companyID, models.ExceedanceStatusValid}, true
 }
 
@@ -54,14 +51,15 @@ func isValidExceedanceStatus(status string) bool {
 
 // GetExceedances retrieves all exceedances with related data
 func (h *ExceedanceHandler) GetExceedances(c *gin.Context) {
-	query := `SELECT e.id, COALESCE(e.exceedanceValues, '') as exceedanceValues, COALESCE(e.flightPhase, '') as flightPhase, COALESCE(e.parameterName, '') as parameterName, COALESCE(e.description, '') as description, COALESCE(e.eventStatus, '') as eventStatus, COALESCE(e.aircraftId, '') as aircraftId, COALESCE(e.flightId, '') as flightId, e.file, e.eventId, e.comment, e.exceedanceLevel, e.detectionRunId, e.startTimeMs, e.endTimeMs, e.durationMs, e.peakValue, e.ruleHash, e.isCurrent, e.createdAt, e.updatedAt,
+	query := `SELECT e.id, COALESCE(e.exceedanceValues, '') as exceedanceValues, COALESCE(e.flightPhase, '') as flightPhase, COALESCE(e.parameterName, '') as parameterName, COALESCE(e.description, '') as description, COALESCE(e.eventStatus, '') as eventStatus, COALESCE(e.aircraftId, '') as aircraftId, COALESCE(e.flightLegId, e.flightId, '') as flightId, e.file, e.eventId, e.comment, e.exceedanceLevel, e.detectionRunId, e.startTimeMs, e.endTimeMs, e.durationMs, e.peakValue, e.ruleHash, e.isCurrent, e.createdAt, e.updatedAt,
 			  el.id as eventlog_id, el.eventName, COALESCE(el.displayName, '') as displayName, COALESCE(el.eventCode, '') as eventCode, COALESCE(el.eventDescription, '') as eventDescription, COALESCE(el.eventParameter, '') as eventParameter, COALESCE(el.eventTrigger, '') as eventTrigger, COALESCE(el.eventType, '') as eventType, COALESCE(el.flightPhase, '') as eventlog_flightPhase, el.high, el.high1, el.high2, el.low, el.low1, el.low2, el.triggerType, el.detectionPeriod, el.severities, COALESCE(el.sop, '') as sop, COALESCE(el.aircraftId, '') as eventlog_aircraftId, el.createdAt as eventlog_createdAt, el.updatedAt as eventlog_updatedAt,
-			  c.id as csv_id, COALESCE(c.name, '') as name, COALESCE(c.file, '') as csv_file, c.status, c.departure, c.pilot, c.destination, c.flightHours, COALESCE(c.aircraftId, '') as csv_aircraftId, c.createdAt as csv_createdAt, c.updatedAt as csv_updatedAt,
+			  f.id as csv_id, COALESCE(f.name, '') as name, COALESCE(c.file, '') as csv_file, f.status, f.departure, f.pilot, f.destination, f.flightHours, COALESCE(f.aircraftId, '') as csv_aircraftId, f.createdAt as csv_createdAt, f.updatedAt as csv_updatedAt,
 			  a.id as aircraft_id, COALESCE(a.airline, '') as airline, COALESCE(a.aircraftMake, '') as aircraftMake, a.modelNumber, COALESCE(a.serialNumber, '') as serialNumber, a.registration, COALESCE(a.companyId, '') as companyId, a.parameters, a.createdAt as aircraft_createdAt, a.updatedAt as aircraft_updatedAt,
 			  co.id as company_id, COALESCE(co.name, '') as company_name, COALESCE(co.email, '') as company_email, co.phone as company_phone, co.address as company_address, co.country as company_country, co.logo as company_logo, COALESCE(co.status, '') as company_status, co.subscriptionId as company_subscriptionId, co.createdAt as company_createdAt, co.updatedAt as company_updatedAt
 			  FROM Exceedance e 
 			  LEFT JOIN EventLog el ON e.eventId = el.id 
-			  LEFT JOIN Csv c ON e.flightId = c.id 
+			  LEFT JOIN FlightLeg f ON COALESCE(e.flightLegId, e.flightId) = f.id
+			  LEFT JOIN Csv c ON f.recordingId = c.id
 			  LEFT JOIN Aircraft a ON e.aircraftId = a.id
 			  LEFT JOIN Company co ON a.companyId = co.id
 			  WHERE e.isCurrent = 1`
@@ -204,14 +202,15 @@ func (h *ExceedanceHandler) GetExceedances(c *gin.Context) {
 func (h *ExceedanceHandler) GetExceedanceByID(c *gin.Context) {
 	id := c.Param("id")
 
-	query := `SELECT e.id, COALESCE(e.exceedanceValues, '') as exceedanceValues, COALESCE(e.flightPhase, '') as flightPhase, COALESCE(e.parameterName, '') as parameterName, COALESCE(e.description, '') as description, COALESCE(e.eventStatus, '') as eventStatus, COALESCE(e.aircraftId, '') as aircraftId, COALESCE(e.flightId, '') as flightId, e.file, e.eventId, e.comment, e.exceedanceLevel, e.detectionRunId, e.startTimeMs, e.endTimeMs, e.durationMs, e.peakValue, e.ruleHash, e.isCurrent, e.createdAt, e.updatedAt,
+	query := `SELECT e.id, COALESCE(e.exceedanceValues, '') as exceedanceValues, COALESCE(e.flightPhase, '') as flightPhase, COALESCE(e.parameterName, '') as parameterName, COALESCE(e.description, '') as description, COALESCE(e.eventStatus, '') as eventStatus, COALESCE(e.aircraftId, '') as aircraftId, COALESCE(e.flightLegId, e.flightId, '') as flightId, e.file, e.eventId, e.comment, e.exceedanceLevel, e.detectionRunId, e.startTimeMs, e.endTimeMs, e.durationMs, e.peakValue, e.ruleHash, e.isCurrent, e.createdAt, e.updatedAt,
 			  el.id as eventlog_id, el.eventName, COALESCE(el.displayName, '') as displayName, COALESCE(el.eventCode, '') as eventCode, COALESCE(el.eventDescription, '') as eventDescription, COALESCE(el.eventParameter, '') as eventParameter, COALESCE(el.eventTrigger, '') as eventTrigger, COALESCE(el.eventType, '') as eventType, COALESCE(el.flightPhase, '') as eventlog_flightPhase, el.high, el.high1, el.high2, el.low, el.low1, el.low2, el.triggerType, el.detectionPeriod, el.severities, COALESCE(el.sop, '') as sop, COALESCE(el.aircraftId, '') as eventlog_aircraftId, el.createdAt as eventlog_createdAt, el.updatedAt as eventlog_updatedAt,
-			  c.id as csv_id, COALESCE(c.name, '') as name, COALESCE(c.file, '') as csv_file, c.status, c.departure, c.pilot, c.destination, c.flightHours, COALESCE(c.aircraftId, '') as csv_aircraftId, c.createdAt as csv_createdAt, c.updatedAt as csv_updatedAt,
+			  f.id as csv_id, COALESCE(f.name, '') as name, COALESCE(c.file, '') as csv_file, f.status, f.departure, f.pilot, f.destination, f.flightHours, COALESCE(f.aircraftId, '') as csv_aircraftId, f.createdAt as csv_createdAt, f.updatedAt as csv_updatedAt,
 			  a.id as aircraft_id, COALESCE(a.airline, '') as airline, COALESCE(a.aircraftMake, '') as aircraftMake, a.modelNumber, COALESCE(a.serialNumber, '') as serialNumber, a.registration, COALESCE(a.companyId, '') as companyId, a.parameters, a.createdAt as aircraft_createdAt, a.updatedAt as aircraft_updatedAt,
 			  co.id as company_id, COALESCE(co.name, '') as company_name, COALESCE(co.email, '') as company_email, co.phone as company_phone, co.address as company_address, co.country as company_country, co.logo as company_logo, COALESCE(co.status, '') as company_status, co.subscriptionId as company_subscriptionId, co.createdAt as company_createdAt, co.updatedAt as company_updatedAt
 			  FROM Exceedance e 
 			  LEFT JOIN EventLog el ON e.eventId = el.id 
-			  LEFT JOIN Csv c ON e.flightId = c.id 
+			  LEFT JOIN FlightLeg f ON COALESCE(e.flightLegId, e.flightId) = f.id
+			  LEFT JOIN Csv c ON f.recordingId = c.id
 			  LEFT JOIN Aircraft a ON e.aircraftId = a.id 
 			  LEFT JOIN Company co ON a.companyId = co.id
 			  WHERE e.id = ? AND e.isCurrent = 1`
@@ -387,9 +386,9 @@ func (h *ExceedanceHandler) GetExceedanceByID(c *gin.Context) {
 func (h *ExceedanceHandler) GetExceedancesByFlightID(c *gin.Context) {
 	flightID := c.Param("id")
 
-	query := `SELECT e.id, e.exceedanceValues, e.flightPhase, e.parameterName, e.description, e.eventStatus, e.aircraftId, e.flightId, e.file, e.eventId, e.comment, e.exceedanceLevel,
+	query := `SELECT e.id, e.exceedanceValues, e.flightPhase, e.parameterName, e.description, e.eventStatus, e.aircraftId, COALESCE(e.flightLegId, e.flightId), e.file, e.eventId, e.comment, e.exceedanceLevel,
 		e.detectionRunId, e.startTimeMs, e.endTimeMs, e.durationMs, e.peakValue, e.ruleHash, e.isCurrent, e.createdAt, e.updatedAt
-		FROM Exceedance e JOIN Aircraft a ON a.id = e.aircraftId WHERE e.flightId = ? AND e.isCurrent = 1`
+		FROM Exceedance e JOIN Aircraft a ON a.id = e.aircraftId WHERE COALESCE(e.flightLegId, e.flightId) = ? AND e.isCurrent = 1`
 	filter, accessArgs, allowed := accessFilter(c)
 	if !allowed {
 		c.JSON(http.StatusForbidden, gin.H{"error": "No company access is assigned to this account"})
@@ -447,6 +446,42 @@ func (h *ExceedanceHandler) CreateExceedances(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	for _, exceedance := range exceedances {
+		var flightCompanyID string
+		err := h.db.QueryRow(`SELECT a.companyId
+			FROM FlightLeg f JOIN Aircraft a ON a.id = f.aircraftId
+			WHERE f.id = ? AND f.aircraftId = ?`, exceedance.FlightID, exceedance.AircraftID).Scan(&flightCompanyID)
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "An exceedance references invalid flight data"})
+			return
+		}
+		if err != nil {
+			respondDatabaseError(c, err)
+			return
+		}
+		if !canAccessCompany(c, flightCompanyID) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "An exceedance references flight data outside your company"})
+			return
+		}
+		if exceedance.EventID != nil && *exceedance.EventID != "" {
+			var eventCompanyID string
+			err = h.db.QueryRow(`SELECT d.companyId FROM EventDefinitionVersion v
+				JOIN EventDefinition d ON d.id = v.definitionId
+				WHERE v.id = ?`, *exceedance.EventID).Scan(&eventCompanyID)
+			if err == sql.ErrNoRows {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "An exceedance references an invalid event"})
+				return
+			}
+			if err != nil {
+				respondDatabaseError(c, err)
+				return
+			}
+			if eventCompanyID != flightCompanyID {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "The event and flight must belong to the same company"})
+				return
+			}
+		}
+	}
 
 	var createdExceedances []models.Exceedance
 	now := time.Now()
@@ -454,13 +489,18 @@ func (h *ExceedanceHandler) CreateExceedances(c *gin.Context) {
 	for _, exceedance := range exceedances {
 		// Generate ID
 		id := uuid.New().String()
+		var recordingID string
+		if err := h.db.QueryRow("SELECT recordingId FROM FlightLeg WHERE id = ?", exceedance.FlightID).Scan(&recordingID); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "A valid flightId is required for every exceedance"})
+			return
+		}
 
-		query := `INSERT INTO Exceedance (id, exceedanceValues, flightPhase, parameterName, description, eventStatus, aircraftId, flightId, file, eventId, comment, exceedanceLevel, createdAt, updatedAt) 
-				  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		query := `INSERT INTO Exceedance (id, exceedanceValues, flightPhase, parameterName, description, eventStatus, aircraftId, flightId, flightLegId, file, eventId, comment, exceedanceLevel, createdAt, updatedAt)
+				  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 		_, err := h.db.Exec(query, id, exceedance.ExceedanceValues, exceedance.FlightPhase,
 			exceedance.ParameterName, exceedance.Description, exceedance.EventStatus,
-			exceedance.AircraftID, exceedance.FlightID, exceedance.File, exceedance.EventID,
+			exceedance.AircraftID, recordingID, exceedance.FlightID, exceedance.File, exceedance.EventID,
 			exceedance.Comment, exceedance.ExceedanceLevel, now.UnixMilli(), now.UnixMilli())
 
 		if err != nil {
@@ -520,8 +560,24 @@ func (h *ExceedanceHandler) UpdateExceedance(c *gin.Context) {
 	}
 	defer tx.Rollback()
 
+	accessQuery := `SELECT e.eventStatus FROM Exceedance e`
+	accessArgs := []interface{}{id}
+	var companyID string
+	if !hasGlobalCompanyAccess(c) {
+		var companyOK bool
+		companyID, companyOK = requireTenantCompany(c)
+		if !companyOK {
+			return
+		}
+		accessQuery += " JOIN Aircraft a ON a.id = e.aircraftId"
+		accessArgs = append(accessArgs, companyID)
+	}
+	accessQuery += " WHERE e.id = ? AND e.isCurrent = 1"
+	if !hasGlobalCompanyAccess(c) {
+		accessQuery += " AND a.companyId = ?"
+	}
 	var previousStatus string
-	if err = tx.QueryRow("SELECT eventStatus FROM Exceedance WHERE id = ? AND isCurrent = 1", id).Scan(&previousStatus); err == sql.ErrNoRows {
+	if err = tx.QueryRow(accessQuery, accessArgs...).Scan(&previousStatus); err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Exceedance not found"})
 		return
 	} else if err != nil {
@@ -534,8 +590,13 @@ func (h *ExceedanceHandler) UpdateExceedance(c *gin.Context) {
 	}
 
 	now := time.Now()
-	if _, err = tx.Exec(`UPDATE Exceedance SET comment = ?, eventStatus = ?, updatedAt = ? WHERE id = ? AND isCurrent = 1`,
-		comment, req.EventStatus, now.UnixMilli(), id); err != nil {
+	updateQuery := `UPDATE Exceedance SET comment = ?, eventStatus = ?, updatedAt = ? WHERE id = ? AND isCurrent = 1`
+	updateArgs := []interface{}{comment, req.EventStatus, now.UnixMilli(), id}
+	if !hasGlobalCompanyAccess(c) {
+		updateQuery += " AND aircraftId IN (SELECT id FROM Aircraft WHERE companyId = ?)"
+		updateArgs = append(updateArgs, companyID)
+	}
+	if _, err = tx.Exec(updateQuery, updateArgs...); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating exceedance"})
 		return
 	}
@@ -582,8 +643,24 @@ func (h *ExceedanceHandler) DeleteExceedance(c *gin.Context) {
 	}
 	defer tx.Rollback()
 
+	accessQuery := `SELECT e.eventStatus FROM Exceedance e`
+	accessArgs := []interface{}{id}
+	var companyID string
+	if !hasGlobalCompanyAccess(c) {
+		var companyOK bool
+		companyID, companyOK = requireTenantCompany(c)
+		if !companyOK {
+			return
+		}
+		accessQuery += " JOIN Aircraft a ON a.id = e.aircraftId"
+		accessArgs = append(accessArgs, companyID)
+	}
+	accessQuery += " WHERE e.id = ? AND e.isCurrent = 1"
+	if !hasGlobalCompanyAccess(c) {
+		accessQuery += " AND a.companyId = ?"
+	}
 	var previousStatus string
-	if err = tx.QueryRow("SELECT eventStatus FROM Exceedance WHERE id = ? AND isCurrent = 1", id).Scan(&previousStatus); err == sql.ErrNoRows {
+	if err = tx.QueryRow(accessQuery, accessArgs...).Scan(&previousStatus); err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Exceedance not found"})
 		return
 	} else if err != nil {
@@ -592,8 +669,13 @@ func (h *ExceedanceHandler) DeleteExceedance(c *gin.Context) {
 	}
 
 	now := time.Now()
-	if _, err = tx.Exec(`UPDATE Exceedance SET isCurrent = 0, supersededAt = ?, updatedAt = ? WHERE id = ? AND isCurrent = 1`,
-		now.UnixMilli(), now.UnixMilli(), id); err != nil {
+	updateQuery := `UPDATE Exceedance SET isCurrent = 0, supersededAt = ?, updatedAt = ? WHERE id = ? AND isCurrent = 1`
+	updateArgs := []interface{}{now.UnixMilli(), now.UnixMilli(), id}
+	if !hasGlobalCompanyAccess(c) {
+		updateQuery += " AND aircraftId IN (SELECT id FROM Aircraft WHERE companyId = ?)"
+		updateArgs = append(updateArgs, companyID)
+	}
+	if _, err = tx.Exec(updateQuery, updateArgs...); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error archiving exceedance"})
 		return
 	}
@@ -641,8 +723,18 @@ func (h *ExceedanceHandler) getExceedanceReviews(exceedanceID string) ([]models.
 	return reviews, rows.Err()
 }
 
-// GetGlobalBenchmarks returns aggregated benchmarking data across all clients
+// GetGlobalBenchmarks retains the legacy response shape. Admin and FDA roles
+// receive cross-company oversight data; tenant roles receive only their company.
 func (h *ExceedanceHandler) GetGlobalBenchmarks(c *gin.Context) {
+	globalAccess := hasGlobalCompanyAccess(c)
+	companyID := ""
+	if !globalAccess {
+		var ok bool
+		companyID, ok = requireTenantCompany(c)
+		if !ok {
+			return
+		}
+	}
 	// Optional filter by aircraft model
 	aircraftModel := c.Query("model")
 
@@ -651,12 +743,12 @@ func (h *ExceedanceHandler) GetGlobalBenchmarks(c *gin.Context) {
 	var rows *sql.Rows
 	var err error
 
-	if aircraftModel != "" {
+	if aircraftModel != "" && globalAccess {
 		modelQuery = `
-			SELECT 
+			SELECT
 				a.aircraftMake,
 				a.modelNumber,
-				COUNT(DISTINCT csv.id) as totalFlights,
+				COUNT(DISTINCT flight.id) as totalFlights,
 				COUNT(e.id) as totalExceedances,
 				SUM(CASE WHEN e.exceedanceLevel = 'None' THEN 1 ELSE 0 END) as severityNone,
 				SUM(CASE WHEN e.exceedanceLevel = 'Low' THEN 1 ELSE 0 END) as severityLow,
@@ -664,17 +756,52 @@ func (h *ExceedanceHandler) GetGlobalBenchmarks(c *gin.Context) {
 				SUM(CASE WHEN e.exceedanceLevel = 'High' THEN 1 ELSE 0 END) as severityHigh,
 				SUM(CASE WHEN e.exceedanceLevel = 'Critical' THEN 1 ELSE 0 END) as severityCritical
 			FROM Aircraft a
-			LEFT JOIN Csv csv ON csv.aircraftId = a.id
-			LEFT JOIN Exceedance e ON e.flightId = csv.id AND e.isCurrent = 1
+			LEFT JOIN FlightLeg flight ON flight.aircraftId = a.id
+			LEFT JOIN Exceedance e ON e.flightLegId = flight.id AND e.isCurrent = 1
 			WHERE a.aircraftMake = ? OR a.modelNumber = ?
 			GROUP BY a.aircraftMake, a.modelNumber`
 		rows, err = h.db.Query(modelQuery, aircraftModel, aircraftModel)
+	} else if aircraftModel != "" {
+		modelQuery = `
+			SELECT 
+				a.aircraftMake,
+				a.modelNumber,
+				COUNT(DISTINCT flight.id) as totalFlights,
+				COUNT(e.id) as totalExceedances,
+				SUM(CASE WHEN e.exceedanceLevel = 'None' THEN 1 ELSE 0 END) as severityNone,
+				SUM(CASE WHEN e.exceedanceLevel = 'Low' THEN 1 ELSE 0 END) as severityLow,
+				SUM(CASE WHEN e.exceedanceLevel = 'Medium' THEN 1 ELSE 0 END) as severityMedium,
+				SUM(CASE WHEN e.exceedanceLevel = 'High' THEN 1 ELSE 0 END) as severityHigh,
+				SUM(CASE WHEN e.exceedanceLevel = 'Critical' THEN 1 ELSE 0 END) as severityCritical
+			FROM Aircraft a
+			LEFT JOIN FlightLeg flight ON flight.aircraftId = a.id
+			LEFT JOIN Exceedance e ON e.flightLegId = flight.id AND e.isCurrent = 1
+			WHERE a.companyId = ? AND (a.aircraftMake = ? OR a.modelNumber = ?)
+			GROUP BY a.aircraftMake, a.modelNumber`
+		rows, err = h.db.Query(modelQuery, companyID, aircraftModel, aircraftModel)
+	} else if globalAccess {
+		modelQuery = `
+			SELECT
+				a.aircraftMake,
+				a.modelNumber,
+				COUNT(DISTINCT flight.id) as totalFlights,
+				COUNT(e.id) as totalExceedances,
+				SUM(CASE WHEN e.exceedanceLevel = 'None' THEN 1 ELSE 0 END) as severityNone,
+				SUM(CASE WHEN e.exceedanceLevel = 'Low' THEN 1 ELSE 0 END) as severityLow,
+				SUM(CASE WHEN e.exceedanceLevel = 'Medium' THEN 1 ELSE 0 END) as severityMedium,
+				SUM(CASE WHEN e.exceedanceLevel = 'High' THEN 1 ELSE 0 END) as severityHigh,
+				SUM(CASE WHEN e.exceedanceLevel = 'Critical' THEN 1 ELSE 0 END) as severityCritical
+			FROM Aircraft a
+			LEFT JOIN FlightLeg flight ON flight.aircraftId = a.id
+			LEFT JOIN Exceedance e ON e.flightLegId = flight.id AND e.isCurrent = 1
+			GROUP BY a.aircraftMake, a.modelNumber`
+		rows, err = h.db.Query(modelQuery)
 	} else {
 		modelQuery = `
 			SELECT 
 				a.aircraftMake,
 				a.modelNumber,
-				COUNT(DISTINCT csv.id) as totalFlights,
+				COUNT(DISTINCT flight.id) as totalFlights,
 				COUNT(e.id) as totalExceedances,
 				SUM(CASE WHEN e.exceedanceLevel = 'None' THEN 1 ELSE 0 END) as severityNone,
 				SUM(CASE WHEN e.exceedanceLevel = 'Low' THEN 1 ELSE 0 END) as severityLow,
@@ -682,10 +809,11 @@ func (h *ExceedanceHandler) GetGlobalBenchmarks(c *gin.Context) {
 				SUM(CASE WHEN e.exceedanceLevel = 'High' THEN 1 ELSE 0 END) as severityHigh,
 				SUM(CASE WHEN e.exceedanceLevel = 'Critical' THEN 1 ELSE 0 END) as severityCritical
 			FROM Aircraft a
-			LEFT JOIN Csv csv ON csv.aircraftId = a.id
-			LEFT JOIN Exceedance e ON e.flightId = csv.id AND e.isCurrent = 1
+			LEFT JOIN FlightLeg flight ON flight.aircraftId = a.id
+			LEFT JOIN Exceedance e ON e.flightLegId = flight.id AND e.isCurrent = 1
+			WHERE a.companyId = ?
 			GROUP BY a.aircraftMake, a.modelNumber`
-		rows, err = h.db.Query(modelQuery)
+		rows, err = h.db.Query(modelQuery, companyID)
 	}
 
 	if err != nil {
@@ -782,12 +910,19 @@ func (h *ExceedanceHandler) GetGlobalBenchmarks(c *gin.Context) {
 			COUNT(*) as count
 		FROM Exceedance e
 		LEFT JOIN EventLog el ON e.eventId = el.id
-		WHERE e.isCurrent = 1
+		JOIN Aircraft a ON a.id = e.aircraftId
+		WHERE e.isCurrent = 1`
+	eventArgs := []interface{}{}
+	if !globalAccess {
+		eventTypeQuery += " AND a.companyId = ?"
+		eventArgs = append(eventArgs, companyID)
+	}
+	eventTypeQuery += `
 		GROUP BY eventName
 		ORDER BY count DESC
 		LIMIT 20`
 
-	eventRows, err := h.db.Query(eventTypeQuery)
+	eventRows, err := h.db.Query(eventTypeQuery, eventArgs...)
 	if err == nil {
 		defer eventRows.Close()
 	}

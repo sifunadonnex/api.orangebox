@@ -6,7 +6,7 @@ import "os"
 func GetPort() string {
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8000"
+		port = "8300"
 	}
 	return port
 }

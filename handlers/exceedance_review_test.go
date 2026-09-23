@@ -56,6 +56,7 @@ func reviewContext(method, body string) (*gin.Context, *httptest.ResponseRecorde
 	context, _ := gin.CreateTestContext(recorder)
 	context.Params = gin.Params{{Key: "id", Value: "occurrence-1"}}
 	context.Set("userId", "reviewer-1")
+	context.Set("userRole", models.RoleFDA)
 	context.Request = httptest.NewRequest(method, "/api/exceedances/occurrence-1", strings.NewReader(body))
 	context.Request.Header.Set("Content-Type", "application/json")
 

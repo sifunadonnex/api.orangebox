@@ -153,8 +153,8 @@ func (h *EventHandler) GetEvents(c *gin.Context) {
 		)
 		WHERE d.lifecycleStatus = 'active'`
 	args := []any{}
-	if !isSystemEventRole(c) {
-		companyID, ok := contextString(c, "userCompanyId")
+	if !hasGlobalCompanyAccess(c) {
+		companyID, ok := tenantCompanyID(c)
 		if !ok {
 			c.JSON(http.StatusOK, []models.EventDefinitionResponse{})
 			return
@@ -340,6 +340,10 @@ func (h *EventHandler) ValidateEventVersion(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Event definition not found"})
 		return
 	}
+	if errors.Is(err, errEventAccessDenied) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You cannot access this event definition"})
+		return
+	}
 	if err != nil {
 		respondDatabaseError(c, err)
 		return
@@ -376,6 +380,10 @@ func (h *EventHandler) PublishEventVersion(c *gin.Context) {
 	event, err := h.getEventByDefinitionID(c, c.Param("id"), true)
 	if errors.Is(err, sql.ErrNoRows) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Event definition not found"})
+		return
+	}
+	if errors.Is(err, errEventAccessDenied) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You cannot access this event definition"})
 		return
 	}
 	if err != nil {
@@ -421,6 +429,19 @@ func (h *EventHandler) PublishEventVersion(c *gin.Context) {
 // explain exceedances that were produced under them.
 func (h *EventHandler) DeleteEvent(c *gin.Context) {
 	id := c.Param("id")
+	event, err := h.getEventByDefinitionID(c, id, true)
+	if errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Event definition not found"})
+		return
+	}
+	if errors.Is(err, errEventAccessDenied) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You cannot access this event definition"})
+		return
+	}
+	if err != nil {
+		respondDatabaseError(c, err)
+		return
+	}
 	now := time.Now().UnixMilli()
 	tx, err := h.db.Begin()
 	if err != nil {
@@ -428,7 +449,7 @@ func (h *EventHandler) DeleteEvent(c *gin.Context) {
 		return
 	}
 	defer tx.Rollback()
-	result, err := tx.Exec(`UPDATE EventDefinition SET lifecycleStatus = 'retired', updatedAt = ? WHERE id = ? AND lifecycleStatus = 'active'`, now, id)
+	result, err := tx.Exec(`UPDATE EventDefinition SET lifecycleStatus = 'retired', updatedAt = ? WHERE id = ? AND companyId = ? AND lifecycleStatus = 'active'`, now, id, *event.CompanyID)
 	if err == nil {
 		_, err = tx.Exec(`UPDATE EventDefinitionVersion SET status = 'retired', effectiveTo = COALESCE(effectiveTo, ?), updatedAt = ? WHERE definitionId = ?`, now, now, id)
 	}
@@ -750,11 +771,7 @@ func isSystemEventRole(c *gin.Context) bool {
 }
 
 func canAccessEventCompany(c *gin.Context, companyID *string) bool {
-	if isSystemEventRole(c) {
-		return true
-	}
-	userCompanyID, ok := contextString(c, "userCompanyId")
-	return ok && companyID != nil && userCompanyID == *companyID
+	return companyID != nil && canAccessCompany(c, *companyID)
 }
 
 func contextString(c *gin.Context, key string) (string, bool) {

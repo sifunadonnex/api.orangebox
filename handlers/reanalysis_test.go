@@ -32,6 +32,7 @@ func TestPersistDetectionResultSupersedesOnlyAffectedDefinition(t *testing.T) {
 
 	schema := `
 		CREATE TABLE Csv (id TEXT PRIMARY KEY, status TEXT, analysisSummary TEXT, updatedAt INTEGER);
+		CREATE TABLE FlightLeg (id TEXT PRIMARY KEY, recordingId TEXT NOT NULL, status TEXT, analysisSummary TEXT, updatedAt INTEGER);
 		CREATE TABLE User (id TEXT PRIMARY KEY, companyId TEXT, isActive INTEGER, role TEXT);
 		CREATE TABLE EventDefinitionVersion (id TEXT PRIMARY KEY, definitionId TEXT NOT NULL);
 		CREATE TABLE DetectionRun (
@@ -55,6 +56,7 @@ func TestPersistDetectionResultSupersedesOnlyAffectedDefinition(t *testing.T) {
 			isRead INTEGER, createdAt INTEGER, updatedAt INTEGER
 		);
 		INSERT INTO Csv VALUES ('flight-1', 'completed', '{}', 1);
+		INSERT INTO FlightLeg VALUES ('flight-1', 'flight-1', 'completed', '{}', 1);
 		INSERT INTO EventDefinitionVersion VALUES ('a-v1', 'definition-a'), ('a-v2', 'definition-a'), ('a-v3', 'definition-a'), ('b-v1', 'definition-b');
 		INSERT INTO DetectionRun VALUES ('old-a-run', 'flight-1', 'completed', 'sample', 1, 1, 1, '[]', 1);
 		INSERT INTO DetectionRun VALUES ('old-b-run', 'flight-1', 'completed', 'sample', 1, 1, 1, '[]', 1);
@@ -63,13 +65,17 @@ func TestPersistDetectionResultSupersedesOnlyAffectedDefinition(t *testing.T) {
 		INSERT INTO DetectionRunDefinition VALUES ('old-b-run', 'definition-b', 'b-v1', 'old-b', 'evaluated', 1, '[]', 1, 1, NULL);
 		INSERT INTO Exceedance VALUES ('old-a', '{}', 'LANDING', 'A', 'old a', 'Valid', 'aircraft-1', 'flight-1', 'flight.csv', 'a-v1', 'Low', 'old-a-run', 0, 1, 1, 1, 'old-a', 1, NULL, 1, 1);
 		INSERT INTO Exceedance VALUES ('old-b', '{}', 'LANDING', 'B', 'old b', 'Valid', 'aircraft-1', 'flight-1', 'flight.csv', 'b-v1', 'Low', 'old-b-run', 0, 1, 1, 1, 'old-b', 1, NULL, 1, 1);
+		ALTER TABLE DetectionRun ADD COLUMN flightLegId TEXT;
+		UPDATE DetectionRun SET flightLegId = flightId;
+		ALTER TABLE Exceedance ADD COLUMN flightLegId TEXT;
+		UPDATE Exceedance SET flightLegId = flightId;
 	`
 	if _, err = db.Exec(schema); err != nil {
 		t.Fatal(err)
 	}
 
 	handler := NewCSVHandler(db)
-	flight := models.CSV{ID: "flight-1"}
+	flight := models.FlightLeg{ID: "flight-1", RecordingID: "flight-1"}
 	aircraft := models.Aircraft{ID: "aircraft-1", CompanyID: "company-1"}
 	definitions := []detection.Definition{{DefinitionID: "definition-a", VersionID: "a-v2", RuleHash: "new-a"}}
 	response := flightAnalysisResponse{
@@ -116,7 +122,7 @@ func TestPersistDetectionResultSupersedesOnlyAffectedDefinition(t *testing.T) {
 	}
 
 	if _, err = db.Exec(`INSERT INTO DetectionRun VALUES
-		('skipped-run', 'flight-1', 'processing', NULL, 0, 0, 0, '[]', NULL)`); err != nil {
+		('skipped-run', 'flight-1', 'processing', NULL, 0, 0, 0, '[]', NULL, 'flight-1')`); err != nil {
 		t.Fatal(err)
 	}
 	skippedDefinitions := []detection.Definition{{DefinitionID: "definition-a", VersionID: "a-v3", RuleHash: "newer-a"}}

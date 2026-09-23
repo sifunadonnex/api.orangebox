@@ -1,6 +1,7 @@
 package detection
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,6 +27,12 @@ func TestBuildReplayResolvesAliasesAndOptionalCapabilities(t *testing.T) {
 	}
 	if result.Capabilities.Airspeed || len(result.Points) != 3 {
 		t.Fatalf("unexpected optional data: %#v", result)
+	}
+	if result.Points[0].AltitudeMeters == nil || math.Abs(*result.Points[0].AltitudeMeters-1676.4) > 0.01 {
+		t.Fatalf("expected altitude to be normalized for 3D rendering: %#v", result.Points[0])
+	}
+	if result.Measurements["altitude"].Unit != "ft" || result.Measurements["altitude"].Reference != "MSL" {
+		t.Fatalf("unexpected altitude metadata: %#v", result.Measurements["altitude"])
 	}
 }
 
@@ -64,6 +71,60 @@ func TestBuildReplaySupportsExpandedAircraftHeaderAliases(t *testing.T) {
 	}
 	if result.Points[1].Phase != "CRUISE" {
 		t.Fatalf("expected mapped phase value, got %#v", result.Points[1])
+	}
+}
+
+func TestBuildReplayConvertsExplicitMetricMeasurements(t *testing.T) {
+	path := writeReplayCSV(t, "Time(sec),Latitude,Longitude,Altitude (m),Ground Speed (kmh),Vertical Speed (mps)\n"+
+		"0,-1.3,36.8,1000,185.2,5\n"+
+		"1,-1.29,36.81,1010,203.72,4\n")
+	result, err := BuildReplay(path, ReplayOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	point := result.Points[0]
+	if point.Altitude == nil || math.Abs(*point.Altitude-3280.839895) > 0.01 || point.AltitudeMeters == nil || *point.AltitudeMeters != 1000 {
+		t.Fatalf("metric altitude was not normalized: %#v", point)
+	}
+	if point.GroundSpeed == nil || math.Abs(*point.GroundSpeed-100) > 0.05 {
+		t.Fatalf("metric speed was not normalized: %#v", point)
+	}
+	if point.VerticalSpeed == nil || math.Abs(*point.VerticalSpeed-984.2519685) > 0.05 {
+		t.Fatalf("metric vertical speed was not normalized: %#v", point)
+	}
+}
+
+func TestBuildReplayLeavesUnknownAltitudeOutOf3DTrack(t *testing.T) {
+	path := writeReplayCSV(t, "Time(sec),Latitude,Longitude,Altitude\n0,-1.3,36.8,1000\n1,-1.29,36.81,1100\n")
+	result, err := BuildReplay(path, ReplayOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Capabilities.Altitude || result.Points[0].Altitude == nil || result.Points[0].AltitudeMeters != nil {
+		t.Fatalf("unknown altitude should remain visible but not be used as metres: %#v", result)
+	}
+	found := false
+	for _, diagnostic := range result.Diagnostics {
+		found = found || diagnostic.Code == "REPLAY_ALTITUDE_UNIT_UNKNOWN"
+	}
+	if !found {
+		t.Fatalf("expected an unknown-unit diagnostic: %#v", result.Diagnostics)
+	}
+}
+
+func TestBuildReplayDerivesTrackWhenHeadingIsMissing(t *testing.T) {
+	path := writeReplayCSV(t, "Time(sec),Latitude,Longitude\n0,-1.3,36.800\n1,-1.3,36.801\n2,-1.3,36.802\n")
+	result, err := BuildReplay(path, ReplayOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.HeadingSource != "derived" || !result.Capabilities.Heading {
+		t.Fatalf("expected a derived heading capability: %#v", result)
+	}
+	for _, point := range result.Points {
+		if point.Heading == nil || math.Abs(*point.Heading-90) > 0.1 {
+			t.Fatalf("unexpected derived heading: %#v", point)
+		}
 	}
 }
 

@@ -53,7 +53,7 @@ func (h *CSVHandler) getDetectionAircraft(id string) (models.Aircraft, error) {
 	return aircraft, err
 }
 
-func (h *CSVHandler) analyzeUploadedFlight(path, filename string, flight *models.CSV, aircraft models.Aircraft, triggeredBy string) flightAnalysisResponse {
+func (h *CSVHandler) analyzeUploadedFlight(path, filename string, flight *models.FlightLeg, aircraft models.Aircraft, triggeredBy string) flightAnalysisResponse {
 	definitions, err := h.loadApplicableDefinitions(aircraft, "")
 	if err != nil {
 		response := newFlightAnalysisResponse(flight, "upload")
@@ -64,7 +64,7 @@ func (h *CSVHandler) analyzeUploadedFlight(path, filename string, flight *models
 	})
 }
 
-func newFlightAnalysisResponse(flight *models.CSV, triggerType string) flightAnalysisResponse {
+func newFlightAnalysisResponse(flight *models.FlightLeg, triggerType string) flightAnalysisResponse {
 	return flightAnalysisResponse{
 		Status: "processing", EngineVersion: detection.EngineVersion, TriggerType: triggerType,
 		SampleIntervalMs: valueOrZeroInt64(flight.SampleIntervalMs),
@@ -72,7 +72,7 @@ func newFlightAnalysisResponse(flight *models.CSV, triggerType string) flightAna
 	}
 }
 
-func (h *CSVHandler) analyzeFlight(path, filename string, flight *models.CSV, aircraft models.Aircraft, definitions []detection.Definition, options flightAnalysisOptions) flightAnalysisResponse {
+func (h *CSVHandler) analyzeFlight(path, filename string, flight *models.FlightLeg, aircraft models.Aircraft, definitions []detection.Definition, options flightAnalysisOptions) flightAnalysisResponse {
 	response := newFlightAnalysisResponse(flight, options.TriggerType)
 	response.ApplicableRuleCount = len(definitions)
 	response.RuleSetHash = hashRuleSet(definitions)
@@ -80,6 +80,7 @@ func (h *CSVHandler) analyzeFlight(path, filename string, flight *models.CSV, ai
 	if err != nil {
 		return h.failFlightAnalysis(flight.ID, "", response, fmt.Errorf("hash stored CSV: %w", err), options.UpdateFlightOnFail)
 	}
+	inputHash = hashScopedInput(inputHash, flight.StartRow, valueOrZeroInt(flight.EndRow))
 	if options.ReuseCompleted {
 		if prior, found, loadErr := h.loadReusableDetectionRun(flight.ID, inputHash, response.SampleIntervalMs, response.RuleSetHash); loadErr != nil {
 			return h.failFlightAnalysis(flight.ID, "", response, fmt.Errorf("inspect prior detection runs: %w", loadErr), options.UpdateFlightOnFail)
@@ -93,10 +94,10 @@ func (h *CSVHandler) analyzeFlight(path, filename string, flight *models.CSV, ai
 	response.RunID = runID
 	now := time.Now().UnixMilli()
 	_, err = h.db.Exec(`INSERT INTO DetectionRun
-		(id, flightId, aircraftId, engineVersion, status, inputHash, ruleSetHash,
+		(id, flightId, flightLegId, aircraftId, engineVersion, status, inputHash, ruleSetHash,
 		 triggerType, triggeredBy, sampleIntervalMs, applicableRuleCount, diagnosticsJson, startedAt)
-		VALUES (?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?, ?, '[]', ?)`,
-		runID, flight.ID, aircraft.ID, detection.EngineVersion, inputHash, response.RuleSetHash,
+		VALUES (?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?, ?, '[]', ?)`,
+		runID, flight.RecordingID, flight.ID, aircraft.ID, detection.EngineVersion, inputHash, response.RuleSetHash,
 		options.TriggerType, nullableText(options.TriggeredBy), response.SampleIntervalMs, len(definitions), now)
 	if err != nil {
 		return h.failFlightAnalysis(flight.ID, "", response, fmt.Errorf("start detection run: %w", err), options.UpdateFlightOnFail)
@@ -104,6 +105,7 @@ func (h *CSVHandler) analyzeFlight(path, filename string, flight *models.CSV, ai
 
 	result, err := detection.AnalyzeFile(path, definitions, detection.Options{
 		SampleIntervalMs: response.SampleIntervalMs, MaxEvidencePoints: 500,
+		StartRow: flight.StartRow, EndRow: valueOrZeroInt(flight.EndRow), RebaseTime: true,
 	})
 	if err != nil {
 		return h.failFlightAnalysis(flight.ID, runID, response, err, options.UpdateFlightOnFail)
@@ -181,7 +183,7 @@ func (h *CSVHandler) loadReusableDetectionRun(flightID, inputHash string, sample
 		COALESCE(sampleIntervalMs, 0), rowCount, applicableRuleCount, evaluatedRuleCount,
 		occurrenceCount, diagnosticsJson, ruleSetHash, triggerType
 		FROM DetectionRun
-		WHERE flightId = ? AND engineVersion = ? AND inputHash = ?
+		WHERE flightLegId = ? AND engineVersion = ? AND inputHash = ?
 		  AND COALESCE(sampleIntervalMs, 0) = ? AND ruleSetHash = ?
 		  AND status IN ('completed', 'completed_with_warnings')
 		ORDER BY completedAt DESC LIMIT 1`, flightID, detection.EngineVersion, inputHash,
@@ -225,7 +227,7 @@ func (h *CSVHandler) loadReusableDetectionRun(flightID, inputHash string, sample
 	return response, true, nil
 }
 
-func (h *CSVHandler) persistDetectionResult(runID, filename string, flight *models.CSV, aircraft models.Aircraft, definitions []detection.Definition, response flightAnalysisResponse) error {
+func (h *CSVHandler) persistDetectionResult(runID, filename string, flight *models.FlightLeg, aircraft models.Aircraft, definitions []detection.Definition, response flightAnalysisResponse) error {
 	diagnosticsJSON, err := json.Marshal(response.Diagnostics)
 	if err != nil {
 		return err
@@ -273,11 +275,11 @@ func (h *CSVHandler) persistDetectionResult(runID, filename string, flight *mode
 		} else {
 			if _, err = tx.Exec(`UPDATE DetectionRunDefinition SET isCurrent = 0, supersededAt = ?
 				WHERE definitionId = ? AND isCurrent = 1 AND detectionRunId IN
-				(SELECT id FROM DetectionRun WHERE flightId = ?)`, now, definition.DefinitionID, flight.ID); err != nil {
+				(SELECT id FROM DetectionRun WHERE flightLegId = ?)`, now, definition.DefinitionID, flight.ID); err != nil {
 				return err
 			}
 			if _, err = tx.Exec(`UPDATE Exceedance SET isCurrent = 0, supersededAt = ?, updatedAt = ?
-				WHERE flightId = ? AND isCurrent = 1 AND eventId IN
+				WHERE flightLegId = ? AND isCurrent = 1 AND eventId IN
 				(SELECT id FROM EventDefinitionVersion WHERE definitionId = ?)`, now, now, flight.ID, definition.DefinitionID); err != nil {
 				return err
 			}
@@ -304,11 +306,11 @@ func (h *CSVHandler) persistDetectionResult(runID, filename string, flight *mode
 		level := titleSeverity(occurrence.Severity)
 		_, err = tx.Exec(`INSERT INTO Exceedance
 			(id, exceedanceValues, flightPhase, parameterName, description, eventStatus,
-			 aircraftId, flightId, file, eventId, exceedanceLevel, detectionRunId,
+			 aircraftId, flightId, flightLegId, file, eventId, exceedanceLevel, detectionRunId,
 			 startTimeMs, endTimeMs, durationMs, peakValue, ruleHash, isCurrent, createdAt, updatedAt)
-			VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+			VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
 			exceedanceID, string(evidenceJSON), occurrence.Phase, occurrence.ParameterID,
-			occurrence.Description, aircraft.ID, flight.ID, filename, occurrence.VersionID,
+			occurrence.Description, aircraft.ID, flight.RecordingID, flight.ID, filename, occurrence.VersionID,
 			level, runID, occurrence.StartTimeMs, occurrence.EndTimeMs, occurrence.DurationMs,
 			occurrence.Value, occurrence.RuleHash, now, now)
 		if err != nil {
@@ -325,9 +327,12 @@ func (h *CSVHandler) persistDetectionResult(runID, filename string, flight *mode
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(`UPDATE Csv SET status = ?, analysisSummary = ?, updatedAt = ? WHERE id = ?`,
+	_, err = tx.Exec(`UPDATE FlightLeg SET status = ?, analysisSummary = ?, updatedAt = ? WHERE id = ?`,
 		response.Status, string(summaryJSON), now, flight.ID)
 	if err != nil {
+		return err
+	}
+	if err = refreshRecordingStatus(tx, flight.RecordingID, now); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
@@ -383,10 +388,31 @@ func (h *CSVHandler) failFlightAnalysis(flightID, runID string, response flightA
 			diagnosticsJson = '[]', completedAt = ? WHERE id = ?`, response.Error, completedAt, runID)
 	}
 	if updateFlight {
-		_, _ = h.db.Exec(`UPDATE Csv SET status = 'failed', analysisSummary = ?, updatedAt = ? WHERE id = ?`,
+		_, _ = h.db.Exec(`UPDATE FlightLeg SET status = 'failed', analysisSummary = ?, updatedAt = ? WHERE id = ?`,
 			string(summaryJSON), completedAt, flightID)
+		var recordingID string
+		if err := h.db.QueryRow("SELECT recordingId FROM FlightLeg WHERE id = ?", flightID).Scan(&recordingID); err == nil {
+			_ = refreshRecordingStatus(h.db, recordingID, completedAt)
+		}
 	}
 	return response
+}
+
+type sqlExecutor interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func refreshRecordingStatus(executor sqlExecutor, recordingID string, updatedAt int64) error {
+	_, err := executor.Exec(`UPDATE Csv SET status = (
+		SELECT CASE
+			WHEN COUNT(1) = 0 THEN 'failed'
+			WHEN SUM(CASE WHEN status IN ('processing', 'pending_reanalysis') THEN 1 ELSE 0 END) > 0 THEN 'pending_reanalysis'
+			WHEN SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) = COUNT(1) THEN 'failed'
+			WHEN SUM(CASE WHEN status IN ('failed', 'completed_with_warnings') THEN 1 ELSE 0 END) > 0 THEN 'completed_with_warnings'
+			ELSE 'completed'
+		END FROM FlightLeg WHERE recordingId = ?
+	) , updatedAt = ? WHERE id = ?`, recordingID, updatedAt, recordingID)
+	return err
 }
 
 func hashRuleSet(definitions []detection.Definition) string {
@@ -397,6 +423,18 @@ func hashRuleSet(definitions []detection.Definition) string {
 		_, _ = fmt.Fprintf(hash, "%s\x00%s\n", definition.VersionID, definition.RuleHash)
 	}
 	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func hashScopedInput(fileHash string, startRow, endRow int) string {
+	hash := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d", fileHash, startRow, endRow)))
+	return hex.EncodeToString(hash[:])
+}
+
+func valueOrZeroInt(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func diagnosticsForVersion(diagnostics []detection.Diagnostic, versionID string) []detection.Diagnostic {

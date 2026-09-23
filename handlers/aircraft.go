@@ -21,7 +21,17 @@ func NewAircraftHandler(db *sql.DB) *AircraftHandler {
 // GetAircrafts retrieves all aircraft with related data
 func (h *AircraftHandler) GetAircrafts(c *gin.Context) {
 	query := `SELECT id, airline, aircraftMake, modelNumber, serialNumber, registration, companyId, parameters, createdAt, updatedAt FROM Aircraft`
-	rows, err := h.db.Query(query)
+	args := []interface{}{}
+	if !hasGlobalCompanyAccess(c) {
+		companyID, ok := tenantCompanyID(c)
+		if !ok {
+			c.JSON(http.StatusOK, []interface{}{})
+			return
+		}
+		query += " WHERE companyId = ?"
+		args = append(args, companyID)
+	}
+	rows, err := h.db.Query(query, args...)
 	if err != nil {
 		println("GetAircrafts query error:", err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error", "details": err.Error()})
@@ -119,14 +129,22 @@ func (h *AircraftHandler) GetAircrafts(c *gin.Context) {
 // GetAircraftByID retrieves a single aircraft by its ID
 func (h *AircraftHandler) GetAircraftByID(c *gin.Context) {
 	aircraftID := c.Param("id")
-
 	query := `SELECT id, airline, aircraftMake, modelNumber, serialNumber, registration, companyId, parameters, createdAt, updatedAt FROM Aircraft WHERE id = ?`
+	args := []interface{}{aircraftID}
+	if !hasGlobalCompanyAccess(c) {
+		companyID, ok := requireTenantCompany(c)
+		if !ok {
+			return
+		}
+		query += " AND companyId = ?"
+		args = append(args, companyID)
+	}
 
 	var aircraft models.Aircraft
 	var modelNumber, registration, parameters sql.NullString
 	var createdAtStr, updatedAtStr sql.NullString
 
-	err := h.db.QueryRow(query, aircraftID).Scan(
+	err := h.db.QueryRow(query, args...).Scan(
 		&aircraft.ID, &aircraft.Airline, &aircraft.AircraftMake, &modelNumber,
 		&aircraft.SerialNumber, &registration, &aircraft.CompanyID, &parameters, &createdAtStr, &updatedAtStr,
 	)
@@ -194,6 +212,16 @@ func (h *AircraftHandler) GetAircraftByID(c *gin.Context) {
 // GetAircraftsByUserID retrieves aircraft by company ID (kept for backward compatibility)
 func (h *AircraftHandler) GetAircraftsByUserID(c *gin.Context) {
 	companyID := c.Param("id")
+	if !hasGlobalCompanyAccess(c) {
+		requestCompanyID, ok := requireTenantCompany(c)
+		if !ok {
+			return
+		}
+		if companyID != requestCompanyID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "You can only access aircraft in your company"})
+			return
+		}
+	}
 
 	query := `SELECT id, airline, aircraftMake, modelNumber, serialNumber, registration, companyId, parameters, createdAt, updatedAt FROM Aircraft WHERE companyId = ?`
 	rows, err := h.db.Query(query, companyID)
@@ -277,6 +305,22 @@ func (h *AircraftHandler) CreateAircraft(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if hasGlobalCompanyAccess(c) {
+		if req.CompanyID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "companyId is required"})
+			return
+		}
+	} else {
+		companyID, ok := requireTenantCompany(c)
+		if !ok {
+			return
+		}
+		if req.CompanyID != "" && req.CompanyID != companyID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "You cannot create aircraft for another company"})
+			return
+		}
+		req.CompanyID = companyID
+	}
 
 	// Generate ID and timestamps
 	id := uuid.New().String()
@@ -317,11 +361,33 @@ func (h *AircraftHandler) UpdateAircraft(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	companyID := req.CompanyID
+	if hasGlobalCompanyAccess(c) {
+		if companyID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "companyId is required"})
+			return
+		}
+	} else {
+		var ok bool
+		companyID, ok = requireTenantCompany(c)
+		if !ok {
+			return
+		}
+		if req.CompanyID != "" && req.CompanyID != companyID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "You cannot move aircraft to another company"})
+			return
+		}
+	}
 
 	now := time.Now()
 
 	query := `UPDATE Aircraft SET airline = ?, aircraftMake = ?, modelNumber = ?, serialNumber = ?, registration = ?, companyId = ?, parameters = ?, updatedAt = ? WHERE id = ?`
-	result, err := h.db.Exec(query, req.Airline, req.AircraftMake, req.ModelNumber, req.SerialNumber, req.Registration, req.CompanyID, req.Parameters, now.UnixMilli(), id)
+	args := []interface{}{req.Airline, req.AircraftMake, req.ModelNumber, req.SerialNumber, req.Registration, companyID, req.Parameters, now.UnixMilli(), id}
+	if !hasGlobalCompanyAccess(c) {
+		query += " AND companyId = ?"
+		args = append(args, companyID)
+	}
+	result, err := h.db.Exec(query, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating aircraft"})
 		return
@@ -341,7 +407,7 @@ func (h *AircraftHandler) UpdateAircraft(c *gin.Context) {
 		ModelNumber:  req.ModelNumber,
 		SerialNumber: req.SerialNumber,
 		Registration: req.Registration,
-		CompanyID:    req.CompanyID,
+		CompanyID:    companyID,
 		Parameters:   req.Parameters,
 		UpdatedAt:    now,
 	}
@@ -352,9 +418,17 @@ func (h *AircraftHandler) UpdateAircraft(c *gin.Context) {
 // DeleteAircraft deletes an aircraft
 func (h *AircraftHandler) DeleteAircraft(c *gin.Context) {
 	id := c.Param("id")
-
 	query := `DELETE FROM Aircraft WHERE id = ?`
-	result, err := h.db.Exec(query, id)
+	args := []interface{}{id}
+	if !hasGlobalCompanyAccess(c) {
+		companyID, ok := requireTenantCompany(c)
+		if !ok {
+			return
+		}
+		query += " AND companyId = ?"
+		args = append(args, companyID)
+	}
+	result, err := h.db.Exec(query, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error deleting aircraft"})
 		return
@@ -372,7 +446,11 @@ func (h *AircraftHandler) DeleteAircraft(c *gin.Context) {
 // Helper functions
 
 func (h *AircraftHandler) getAircraftCSVs(aircraftID string) ([]models.CSV, error) {
-	query := `SELECT id, name, file, status, departure, pilot, destination, flightHours, aircraftId, sampleIntervalMs, analysisSummary, createdAt, updatedAt FROM Csv WHERE aircraftId = ?`
+	query := `SELECT f.id, f.name, c.file, f.status, f.departure, f.pilot,
+		f.destination, f.flightHours, f.aircraftId, c.sampleIntervalMs,
+		f.analysisSummary, f.createdAt, f.updatedAt
+		FROM FlightLeg f JOIN Csv c ON c.id = f.recordingId
+		WHERE f.aircraftId = ? ORDER BY f.createdAt DESC, f.recordingId, f.legIndex`
 	rows, err := h.db.Query(query, aircraftID)
 	if err != nil {
 		return nil, err

@@ -166,7 +166,7 @@ func (h *SubscriptionHandler) GetSubscriptionStatus(c *gin.Context) {
 
 	h.db.QueryRow("SELECT COUNT(*) FROM User WHERE companyId = ?", companyID).Scan(&usersUsed)
 	h.db.QueryRow("SELECT COUNT(*) FROM Aircraft WHERE companyId = ?", companyID).Scan(&aircraftUsed)
-	h.db.QueryRow("SELECT COUNT(*) FROM Csv WHERE aircraftId IN (SELECT id FROM Aircraft WHERE companyId = ?)", companyID).Scan(&flightsUsed)
+	h.db.QueryRow("SELECT COUNT(*) FROM FlightLeg WHERE aircraftId IN (SELECT id FROM Aircraft WHERE companyId = ?)", companyID).Scan(&flightsUsed)
 
 	// Calculate storage (simplified - you may want to sum actual file sizes)
 	storageUsedGB = float64(flightsUsed) * 0.5 // Assume 0.5GB per flight average

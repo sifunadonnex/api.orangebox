@@ -163,6 +163,17 @@ func (h *CompanyHandler) GetCompanies(c *gin.Context) {
 // GetCompanyByID retrieves a company by ID with subscription details
 func (h *CompanyHandler) GetCompanyByID(c *gin.Context) {
 	id := c.Param("id")
+	role, _ := contextString(c, "userRole")
+	if role != models.RoleAdmin {
+		companyID, ok := requireTenantCompany(c)
+		if !ok {
+			return
+		}
+		if id != companyID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "You can only access your own company"})
+			return
+		}
+	}
 
 	company, err := h.getCompanyByID(id)
 	if err != nil {

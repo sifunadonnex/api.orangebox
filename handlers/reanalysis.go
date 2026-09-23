@@ -45,12 +45,9 @@ func (h *CSVHandler) GetFlightReplay(c *gin.Context) {
 		respondDatabaseError(c, err)
 		return
 	}
-	if !isSystemEventRole(c) {
-		companyID, ok := contextString(c, "userCompanyId")
-		if !ok || companyID != aircraft.CompanyID {
-			c.JSON(http.StatusForbidden, gin.H{"error": "You cannot access this flight replay"})
-			return
-		}
+	if !canAccessCompany(c, aircraft.CompanyID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You cannot access this flight replay"})
+		return
 	}
 	path, err := storedCSVPath(flight.File)
 	if err != nil {
@@ -60,6 +57,9 @@ func (h *CSVHandler) GetFlightReplay(c *gin.Context) {
 	replay, err := detection.BuildReplay(path, detection.ReplayOptions{
 		SampleIntervalMs: valueOrZeroInt64(flight.SampleIntervalMs),
 		MaxPoints:        10000,
+		StartRow:         flight.StartRow,
+		EndRow:           valueOrZeroInt(flight.EndRow),
+		RebaseTime:       true,
 	})
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
@@ -81,12 +81,9 @@ func (h *CSVHandler) ReanalyzeCSV(c *gin.Context) {
 		respondDatabaseError(c, err)
 		return
 	}
-	if !isSystemEventRole(c) {
-		companyID, ok := contextString(c, "userCompanyId")
-		if !ok || companyID != aircraft.CompanyID {
-			c.JSON(http.StatusForbidden, gin.H{"error": "You cannot analyze this flight"})
-			return
-		}
+	if !canAccessCompany(c, aircraft.CompanyID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You cannot analyze this flight"})
+		return
 	}
 	definitions, err := h.loadApplicableDefinitions(aircraft, "")
 	if err != nil {
@@ -179,14 +176,19 @@ func (h *CSVHandler) BackfillEvent(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": response.FailedCount == 0, "data": response})
 }
 
-func (h *CSVHandler) getStoredFlight(id string) (models.CSV, models.Aircraft, error) {
-	var flight models.CSV
+func (h *CSVHandler) getStoredFlight(id string) (models.FlightLeg, models.Aircraft, error) {
+	var flight models.FlightLeg
 	var aircraft models.Aircraft
-	err := h.db.QueryRow(`SELECT c.id, c.name, c.file, c.aircraftId, c.sampleIntervalMs,
+	err := h.db.QueryRow(`SELECT f.id, f.recordingId, f.name, c.file, f.aircraftId,
+		c.sampleIntervalMs, f.legIndex, f.startRow, f.endRow, f.startSample,
+		f.endSample, f.boundarySource,
 		a.id, a.airline, a.aircraftMake, a.modelNumber, a.serialNumber,
 		a.registration, a.companyId, a.parameters
-		FROM Csv c JOIN Aircraft a ON a.id = c.aircraftId WHERE c.id = ?`, id).Scan(
-		&flight.ID, &flight.Name, &flight.File, &flight.AircraftID, &flight.SampleIntervalMs,
+		FROM FlightLeg f JOIN Csv c ON c.id = f.recordingId
+		JOIN Aircraft a ON a.id = f.aircraftId WHERE f.id = ?`, id).Scan(
+		&flight.ID, &flight.RecordingID, &flight.Name, &flight.File, &flight.AircraftID,
+		&flight.SampleIntervalMs, &flight.LegIndex, &flight.StartRow, &flight.EndRow,
+		&flight.StartSample, &flight.EndSample, &flight.BoundarySource,
 		&aircraft.ID, &aircraft.Airline, &aircraft.AircraftMake, &aircraft.ModelNumber,
 		&aircraft.SerialNumber, &aircraft.Registration, &aircraft.CompanyID, &aircraft.Parameters,
 	)
@@ -209,29 +211,33 @@ func (h *CSVHandler) getBackfillEventCompany(definitionID string) (*string, erro
 	return stringPointer(companyID.String), err
 }
 
-func (h *CSVHandler) listBackfillCandidates(companyID *string) ([]models.CSV, []models.Aircraft, error) {
-	query := `SELECT c.id, c.name, c.file, c.aircraftId, c.sampleIntervalMs,
+func (h *CSVHandler) listBackfillCandidates(companyID *string) ([]models.FlightLeg, []models.Aircraft, error) {
+	query := `SELECT f.id, f.recordingId, f.name, c.file, f.aircraftId, c.sampleIntervalMs,
+		f.legIndex, f.startRow, f.endRow, f.startSample, f.endSample, f.boundarySource,
 		a.id, a.airline, a.aircraftMake, a.modelNumber, a.serialNumber,
 		a.registration, a.companyId, a.parameters
-		FROM Csv c JOIN Aircraft a ON a.id = c.aircraftId`
+		FROM FlightLeg f JOIN Csv c ON c.id = f.recordingId
+		JOIN Aircraft a ON a.id = f.aircraftId`
 	args := []any{}
 	if companyID != nil {
 		query += " WHERE a.companyId = ?"
 		args = append(args, *companyID)
 	}
-	query += " ORDER BY c.createdAt, c.id"
+	query += " ORDER BY f.createdAt, f.recordingId, f.legIndex"
 	rows, err := h.db.Query(query, args...)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer rows.Close()
-	flights := make([]models.CSV, 0)
+	flights := make([]models.FlightLeg, 0)
 	aircrafts := make([]models.Aircraft, 0)
 	for rows.Next() {
-		var flight models.CSV
+		var flight models.FlightLeg
 		var aircraft models.Aircraft
-		if err = rows.Scan(&flight.ID, &flight.Name, &flight.File, &flight.AircraftID,
-			&flight.SampleIntervalMs, &aircraft.ID, &aircraft.Airline, &aircraft.AircraftMake,
+		if err = rows.Scan(&flight.ID, &flight.RecordingID, &flight.Name, &flight.File,
+			&flight.AircraftID, &flight.SampleIntervalMs, &flight.LegIndex, &flight.StartRow,
+			&flight.EndRow, &flight.StartSample, &flight.EndSample, &flight.BoundarySource,
+			&aircraft.ID, &aircraft.Airline, &aircraft.AircraftMake,
 			&aircraft.ModelNumber, &aircraft.SerialNumber, &aircraft.Registration,
 			&aircraft.CompanyID, &aircraft.Parameters); err != nil {
 			return nil, nil, err

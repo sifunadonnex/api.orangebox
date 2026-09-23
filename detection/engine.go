@@ -16,7 +16,7 @@ import (
 	"fdm-backend/models"
 )
 
-const EngineVersion = "2.0.0"
+const EngineVersion = "2.1.0"
 
 type Definition struct {
 	DefinitionID string
@@ -31,6 +31,9 @@ type Definition struct {
 type Options struct {
 	SampleIntervalMs  int64
 	MaxEvidencePoints int
+	StartRow          int
+	EndRow            int
+	RebaseTime        bool
 }
 
 type Diagnostic struct {
@@ -141,6 +144,10 @@ func AnalyzeFile(path string, definitions []Definition, options Options) (Result
 	if err != nil {
 		return Result{}, err
 	}
+	rows, err = rowsInRange(rows, options.StartRow, options.EndRow)
+	if err != nil {
+		return Result{}, err
+	}
 	diagnostics := diagnosticCollector{}
 	for _, item := range parseDiagnostics {
 		diagnostics.add(item.Code, item.Severity, item.Message, item.RuleVersionID)
@@ -148,6 +155,9 @@ func AnalyzeFile(path string, definitions []Definition, options Options) (Result
 	frames, timingSource, timingDiagnostics, err := timestampRows(rows, options.SampleIntervalMs)
 	if err != nil {
 		return Result{}, err
+	}
+	if options.RebaseTime {
+		rebaseFrameTimes(frames)
 	}
 	for _, item := range timingDiagnostics {
 		diagnostics.add(item.Code, item.Severity, item.Message, item.RuleVersionID)

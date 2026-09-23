@@ -64,6 +64,33 @@ type CSV struct {
 	UpdatedAt        time.Time `json:"updatedAt" db:"updatedAt"`
 }
 
+// FlightLeg represents one logical flight contained in an uploaded CSV
+// recording. The source file is retained once in Csv; row boundaries select
+// the portion belonging to this flight without duplicating the file.
+type FlightLeg struct {
+	ID                   string    `json:"id" db:"id"`
+	RecordingID          string    `json:"recordingId" db:"recordingId"`
+	Name                 string    `json:"name" db:"name"`
+	AircraftID           string    `json:"aircraftId" db:"aircraftId"`
+	LegIndex             int       `json:"legIndex" db:"legIndex"`
+	RecordingFlightCount int       `json:"recordingFlightCount" db:"recordingFlightCount"`
+	Status               *string   `json:"status" db:"status"`
+	Departure            *string   `json:"departure" db:"departure"`
+	Pilot                *string   `json:"pilot" db:"pilot"`
+	Destination          *string   `json:"destination" db:"destination"`
+	FlightHours          *string   `json:"flightHours" db:"flightHours"`
+	StartRow             int       `json:"startRow" db:"startRow"`
+	EndRow               *int      `json:"endRow,omitempty" db:"endRow"`
+	StartSample          *string   `json:"startSample,omitempty" db:"startSample"`
+	EndSample            *string   `json:"endSample,omitempty" db:"endSample"`
+	BoundarySource       string    `json:"boundarySource" db:"boundarySource"`
+	AnalysisSummary      *string   `json:"analysisSummary,omitempty" db:"analysisSummary"`
+	File                 string    `json:"file" db:"file"`
+	SampleIntervalMs     *int64    `json:"sampleIntervalMs,omitempty" db:"sampleIntervalMs"`
+	CreatedAt            time.Time `json:"createdAt" db:"createdAt"`
+	UpdatedAt            time.Time `json:"updatedAt" db:"updatedAt"`
+}
+
 // Flight represents a flight in the system
 type Flight struct {
 	ID         string    `json:"id" db:"id"`

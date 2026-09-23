@@ -2,8 +2,12 @@ package handlers
 
 import (
 	"database/sql"
+	"encoding/csv"
+	"encoding/json"
+	"fdm-backend/detection"
 	"fdm-backend/models"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -40,8 +44,8 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Only CSV files are accepted"})
 		return
 	}
-	if file.Size <= 0 || file.Size > 50*1024*1024 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "CSV file size must be between 1 byte and 50 MB"})
+	if file.Size <= 0 || file.Size > 100*1024*1024 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "CSV file size must be between 1 byte and 100 MB"})
 		return
 	}
 
@@ -54,12 +58,9 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 		respondDatabaseError(c, err)
 		return
 	}
-	if !isSystemEventRole(c) {
-		companyID, ok := contextString(c, "userCompanyId")
-		if !ok || companyID != aircraft.CompanyID {
-			c.JSON(http.StatusForbidden, gin.H{"error": "You cannot upload flight data for this aircraft"})
-			return
-		}
+	if !canAccessCompany(c, aircraft.CompanyID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You cannot upload flight data for this aircraft"})
+		return
 	}
 
 	timestamp := time.Now().UnixNano() / int64(time.Millisecond)
@@ -74,19 +75,32 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "File upload failed", "code": 500})
 		return
 	}
+	segments, segmentationDiagnostics, err := detection.DetectRecordingSegments(csvPath)
+	if err != nil {
+		_ = os.Remove(csvPath)
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "CSV recording could not be segmented", "details": err.Error()})
+		return
+	}
 
 	id := uuid.New().String()
 	now := time.Now()
+	tx, err := h.db.Begin()
+	if err != nil {
+		_ = os.Remove(csvPath)
+		respondDatabaseError(c, err)
+		return
+	}
+	defer tx.Rollback()
 	query := `INSERT INTO Csv (id, name, file, status, aircraftId, departure, destination, flightHours, pilot, sampleIntervalMs, createdAt, updatedAt)
 		VALUES (?, ?, ?, 'processing', ?, ?, ?, ?, ?, ?, ?, ?)`
-	_, err = h.db.Exec(query, id, req.Name, filename, req.AircraftID, req.Departure, req.Destination, req.FlightHours, req.Pilot, req.SampleIntervalMs, now.UnixMilli(), now.UnixMilli())
+	_, err = tx.Exec(query, id, req.Name, filename, req.AircraftID, req.Departure, req.Destination, req.FlightHours, req.Pilot, req.SampleIntervalMs, now.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		_ = os.Remove(csvPath)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error saving CSV record", "details": err.Error()})
 		return
 	}
 
-	csv := models.CSV{
+	recording := models.CSV{
 		ID:               id,
 		Name:             req.Name,
 		File:             filename,
@@ -99,31 +113,106 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
+	flights := make([]models.FlightLeg, 0, len(segments))
+	for index, segment := range segments {
+		flightID := uuid.New().String()
+		flightName := req.Name
+		departure, destination, flightHours, pilot := req.Departure, req.Destination, req.FlightHours, req.Pilot
+		if index == 0 {
+			// Preserve existing single-flight URLs and migrated identifiers.
+			flightID = id
+		}
+		if len(segments) > 1 {
+			flightName = fmt.Sprintf("%s · Flight %d", req.Name, index+1)
+			departure, destination, flightHours, pilot = nil, nil, nil, nil
+		}
+		startSample, endSample := optionalStringPointer(segment.StartSample), optionalStringPointer(segment.EndSample)
+		endRow := segment.EndRow
+		flight := models.FlightLeg{
+			ID: flightID, RecordingID: id, Name: flightName, AircraftID: req.AircraftID,
+			LegIndex: index + 1, Status: stringPointer("processing"), Departure: departure,
+			RecordingFlightCount: len(segments),
+			Destination:          destination, FlightHours: flightHours, Pilot: pilot,
+			StartRow: segment.StartRow, EndRow: &endRow, StartSample: startSample,
+			EndSample: endSample, BoundarySource: segment.BoundarySource,
+			File: filename, SampleIntervalMs: &req.SampleIntervalMs, CreatedAt: now, UpdatedAt: now,
+		}
+		_, err = tx.Exec(`INSERT INTO FlightLeg
+			(id, recordingId, name, aircraftId, legIndex, status, departure, pilot,
+			 destination, flightHours, startRow, endRow, startSample, endSample,
+			 boundarySource, createdAt, updatedAt)
+			VALUES (?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			flight.ID, flight.RecordingID, flight.Name, flight.AircraftID, flight.LegIndex,
+			flight.Departure, flight.Pilot, flight.Destination, flight.FlightHours,
+			flight.StartRow, flight.EndRow, flight.StartSample, flight.EndSample,
+			flight.BoundarySource, now.UnixMilli(), now.UnixMilli())
+		if err != nil {
+			_ = os.Remove(csvPath)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error saving detected flight legs", "details": err.Error()})
+			return
+		}
+		flights = append(flights, flight)
+	}
+	if err = tx.Commit(); err != nil {
+		_ = os.Remove(csvPath)
+		respondDatabaseError(c, err)
+		return
+	}
 
 	triggeredBy, _ := contextString(c, "userId")
-	analysis := h.analyzeUploadedFlight(csvPath, filename, &csv, aircraft, triggeredBy)
-	csv.Status = &analysis.Status
-	c.JSON(http.StatusCreated, gin.H{"success": true, "data": csv, "analysis": analysis})
+	analyses := make([]flightAnalysisResponse, 0, len(flights))
+	for index := range flights {
+		analysis := h.analyzeUploadedFlight(csvPath, filename, &flights[index], aircraft, triggeredBy)
+		flights[index].Status = &analysis.Status
+		analyses = append(analyses, analysis)
+	}
+	aggregate := aggregateFlightAnalyses(analyses, segmentationDiagnostics, len(flights))
+	recording.Status = &aggregate.Status
+	summaryJSON, _ := json.Marshal(aggregate)
+	recording.AnalysisSummary = stringPointer(string(summaryJSON))
+	_, _ = h.db.Exec(`UPDATE Csv SET status = ?, analysisSummary = ?, updatedAt = ? WHERE id = ?`,
+		aggregate.Status, string(summaryJSON), time.Now().UnixMilli(), recording.ID)
+	c.JSON(http.StatusCreated, gin.H{
+		"success": true, "data": flights[0], "recording": recording,
+		"flights": flights, "flightCount": len(flights), "analyses": analyses, "analysis": aggregate,
+	})
 }
 
-// GetCSVs retrieves all CSV files with exceedances
+// GetCSVs retrieves logical flights with their source-recording metadata.
 func (h *CSVHandler) GetCSVs(c *gin.Context) {
-	query := `SELECT c.id, c.name, c.file, c.status, c.departure, c.pilot, c.destination, c.flightHours, c.aircraftId, c.sampleIntervalMs, c.analysisSummary, c.createdAt, c.updatedAt,
+	query := `SELECT f.id, f.recordingId, f.name, c.file, f.status, f.departure, f.pilot,
+			  f.destination, f.flightHours, f.aircraftId, c.sampleIntervalMs,
+			  f.analysisSummary, f.legIndex, f.startRow, f.endRow, f.startSample,
+			  f.endSample, f.boundarySource,
+			  (SELECT COUNT(1) FROM FlightLeg sibling WHERE sibling.recordingId = f.recordingId),
+			  f.createdAt, f.updatedAt,
 			  a.id as aircraft_id, a.airline, a.aircraftMake, a.modelNumber, a.serialNumber, a.registration, a.companyId, a.parameters, a.createdAt as aircraft_createdAt, a.updatedAt as aircraft_updatedAt,
 			  co.id as company_id, co.name as company_name, co.email as company_email, co.phone as company_phone, co.address as company_address, co.country as company_country, co.logo as company_logo, co.status as company_status, co.subscriptionId as company_subscriptionId, co.createdAt as company_createdAt, co.updatedAt as company_updatedAt
-			  FROM Csv c
-			  LEFT JOIN Aircraft a ON c.aircraftId = a.id
+			  FROM FlightLeg f
+			  JOIN Csv c ON c.id = f.recordingId
+			  LEFT JOIN Aircraft a ON f.aircraftId = a.id
 			  LEFT JOIN Company co ON a.companyId = co.id`
-	rows, err := h.db.Query(query)
+	args := []interface{}{}
+	if !hasGlobalCompanyAccess(c) {
+		companyID, ok := tenantCompanyID(c)
+		if !ok {
+			c.JSON(http.StatusOK, []interface{}{})
+			return
+		}
+		query += " WHERE a.companyId = ?"
+		args = append(args, companyID)
+	}
+	query += " ORDER BY f.createdAt DESC, f.recordingId, f.legIndex"
+	rows, err := h.db.Query(query, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
 	}
 	defer rows.Close()
 
-	var csvs []interface{}
+	var flights []interface{}
 	for rows.Next() {
-		var csv models.CSV
+		var flight models.FlightLeg
 		var aircraft models.Aircraft
 		var company models.Company
 		var createdAtStr, updatedAtStr sql.NullString
@@ -132,8 +221,12 @@ func (h *CSVHandler) GetCSVs(c *gin.Context) {
 		var companyID sql.NullString
 		var companyCreatedAtStr, companyUpdatedAtStr sql.NullString
 
-		err := rows.Scan(&csv.ID, &csv.Name, &csv.File, &csv.Status, &csv.Departure, &csv.Pilot,
-			&csv.Destination, &csv.FlightHours, &csv.AircraftID, &csv.SampleIntervalMs, &csv.AnalysisSummary, &createdAtStr, &updatedAtStr,
+		err := rows.Scan(&flight.ID, &flight.RecordingID, &flight.Name, &flight.File,
+			&flight.Status, &flight.Departure, &flight.Pilot, &flight.Destination,
+			&flight.FlightHours, &flight.AircraftID, &flight.SampleIntervalMs,
+			&flight.AnalysisSummary, &flight.LegIndex, &flight.StartRow, &flight.EndRow,
+			&flight.StartSample, &flight.EndSample, &flight.BoundarySource,
+			&flight.RecordingFlightCount, &createdAtStr, &updatedAtStr,
 			&aircraftID, &aircraft.Airline, &aircraft.AircraftMake, &aircraft.ModelNumber,
 			&aircraft.SerialNumber, &aircraft.Registration, &aircraft.CompanyID, &aircraft.Parameters, &aircraftCreatedAtStr, &aircraftUpdatedAtStr,
 			&companyID, &company.Name, &company.Email, &company.Phone, &company.Address, &company.Country, &company.Logo, &company.Status, &company.SubscriptionID, &companyCreatedAtStr, &companyUpdatedAtStr)
@@ -146,13 +239,13 @@ func (h *CSVHandler) GetCSVs(c *gin.Context) {
 		if createdAtStr.Valid {
 			parsedTime, err := parseTimestamp(createdAtStr.String)
 			if err == nil {
-				csv.CreatedAt = parsedTime
+				flight.CreatedAt = parsedTime
 			}
 		}
 		if updatedAtStr.Valid {
 			parsedTime, err := parseTimestamp(updatedAtStr.String)
 			if err == nil {
-				csv.UpdatedAt = parsedTime
+				flight.UpdatedAt = parsedTime
 			}
 		}
 
@@ -201,53 +294,84 @@ func (h *CSVHandler) GetCSVs(c *gin.Context) {
 		}
 
 		// Get related exceedances
-		exceedances, _ := h.getCSVExceedances(csv.ID)
+		exceedances, _ := h.getCSVExceedances(flight.ID)
 
-		csvWithExceedances := struct {
-			models.CSV
+		flightWithExceedances := struct {
+			models.FlightLeg
 			Aircraft   *models.Aircraft    `json:"aircraft"`
 			Exceedance []models.Exceedance `json:"Exceedance"`
 		}{
-			CSV:        csv,
+			FlightLeg:  flight,
 			Aircraft:   aircraftPtr,
 			Exceedance: exceedances,
 		}
 
-		csvs = append(csvs, csvWithExceedances)
+		flights = append(flights, flightWithExceedances)
 	}
 
-	c.JSON(http.StatusOK, csvs)
+	c.JSON(http.StatusOK, flights)
 }
 
-// DownloadCSV serves a CSV file for download
+// DownloadCSV serves only the source rows belonging to the requested flight.
 func (h *CSVHandler) DownloadCSV(c *gin.Context) {
-	filename := c.Param("id")
-	filePath := filepath.Join("csvs", filename)
-
-	// Check if file exists
-	if _, err := filepath.Abs(filePath); err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+	flight, aircraft, err := h.getStoredFlight(c.Param("id"))
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Flight not found"})
 		return
 	}
-
-	c.File(filePath)
+	if err != nil {
+		respondDatabaseError(c, err)
+		return
+	}
+	if !canAccessCompany(c, aircraft.CompanyID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You cannot access this flight data"})
+		return
+	}
+	filePath, err := storedCSVPath(flight.File)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Stored recording not found"})
+		return
+	}
+	if err = streamCSVRange(c, filePath, flight.Name, flight.StartRow, valueOrZeroInt(flight.EndRow)); err != nil {
+		log.Printf("Error streaming flight CSV: %v", err)
+	}
 }
 
-// GetCSVByID retrieves a CSV record by ID
+// GetCSVByID retrieves a logical flight and its source-recording metadata.
 func (h *CSVHandler) GetCSVByID(c *gin.Context) {
 	id := c.Param("id")
+	query := `SELECT f.id, f.recordingId, f.name, c.file, f.status, f.departure,
+		f.pilot, f.destination, f.flightHours, f.aircraftId, c.sampleIntervalMs,
+		f.analysisSummary, f.legIndex, f.startRow, f.endRow, f.startSample,
+		f.endSample, f.boundarySource,
+		(SELECT COUNT(1) FROM FlightLeg sibling WHERE sibling.recordingId = f.recordingId),
+		f.createdAt, f.updatedAt
+		FROM FlightLeg f JOIN Csv c ON c.id = f.recordingId
+		JOIN Aircraft a ON a.id = f.aircraftId
+		WHERE f.id = ?`
+	args := []interface{}{id}
+	if !hasGlobalCompanyAccess(c) {
+		companyID, ok := requireTenantCompany(c)
+		if !ok {
+			return
+		}
+		query += " AND a.companyId = ?"
+		args = append(args, companyID)
+	}
 
-	query := `SELECT id, name, file, status, departure, pilot, destination, flightHours, aircraftId, sampleIntervalMs, analysisSummary, createdAt, updatedAt FROM Csv WHERE id = ?`
-
-	var csv models.CSV
+	var flight models.FlightLeg
 	var createdAtStr, updatedAtStr sql.NullString
-	row := h.db.QueryRow(query, id)
-	err := row.Scan(&csv.ID, &csv.Name, &csv.File, &csv.Status, &csv.Departure, &csv.Pilot,
-		&csv.Destination, &csv.FlightHours, &csv.AircraftID, &csv.SampleIntervalMs, &csv.AnalysisSummary, &createdAtStr, &updatedAtStr)
+	row := h.db.QueryRow(query, args...)
+	err := row.Scan(&flight.ID, &flight.RecordingID, &flight.Name, &flight.File,
+		&flight.Status, &flight.Departure, &flight.Pilot, &flight.Destination,
+		&flight.FlightHours, &flight.AircraftID, &flight.SampleIntervalMs,
+		&flight.AnalysisSummary, &flight.LegIndex, &flight.StartRow, &flight.EndRow,
+		&flight.StartSample, &flight.EndSample, &flight.BoundarySource,
+		&flight.RecordingFlightCount, &createdAtStr, &updatedAtStr)
 
 	if err != nil {
 		if err == sql.ErrNoRows {
-			c.JSON(http.StatusNotFound, gin.H{"error": "CSV not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "Flight not found"})
 		} else {
 			log.Printf("Error scanning CSV record: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error", "details": err.Error()})
@@ -259,30 +383,30 @@ func (h *CSVHandler) GetCSVByID(c *gin.Context) {
 	if createdAtStr.Valid {
 		parsedTime, err := parseTimestamp(createdAtStr.String)
 		if err == nil {
-			csv.CreatedAt = parsedTime
+			flight.CreatedAt = parsedTime
 		}
 	}
 	if updatedAtStr.Valid {
 		parsedTime, err := parseTimestamp(updatedAtStr.String)
 		if err == nil {
-			csv.UpdatedAt = parsedTime
+			flight.UpdatedAt = parsedTime
 		}
 	}
 
-	c.JSON(http.StatusOK, csv)
+	c.JSON(http.StatusOK, flight)
 }
 
 // Helper function to get exceedances for a CSV with related EventLog and Aircraft data
 func (h *CSVHandler) getCSVExceedances(csvID string) ([]models.Exceedance, error) {
 	query := `SELECT e.id, e.exceedanceValues, e.flightPhase, e.parameterName, e.description, e.eventStatus,
-			  e.aircraftId, e.flightId, e.file, e.eventId, e.comment, e.exceedanceLevel, e.createdAt, e.updatedAt,
+			  e.aircraftId, COALESCE(e.flightLegId, e.flightId), e.file, e.eventId, e.comment, e.exceedanceLevel, e.createdAt, e.updatedAt,
 			  a.serialNumber as aircraftRegistration,
 			  ev.id as eventLogId, ev.eventName, ev.displayName, ev.eventCode, ev.eventDescription,
 			  ev.eventParameter, ev.eventTrigger, ev.eventType, ev.flightPhase as eventFlightPhase
 			  FROM Exceedance e
 			  LEFT JOIN Aircraft a ON e.aircraftId = a.id
 			  LEFT JOIN EventLog ev ON e.eventId = ev.id
-			  WHERE e.flightId = ? AND e.isCurrent = 1`
+			  WHERE COALESCE(e.flightLegId, e.flightId) = ? AND e.isCurrent = 1`
 	rows, err := h.db.Query(query, csvID)
 	if err != nil {
 		return nil, err
@@ -369,30 +493,51 @@ func (h *CSVHandler) getCSVExceedances(csvID string) ([]models.Exceedance, error
 // DeleteCSV deletes a CSV file and its associated data
 func (h *CSVHandler) DeleteCSV(c *gin.Context) {
 	id := c.Param("id")
-
-	// Check if CSV exists
-	var exists bool
-	var filename string
-	err := h.db.QueryRow("SELECT EXISTS(SELECT 1 FROM Csv WHERE id = ?), (SELECT file FROM Csv WHERE id = ?)", id, id).Scan(&exists, &filename)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
-		return
+	var recordingID string
+	lookupQuery := `SELECT f.recordingId FROM FlightLeg f
+		JOIN Aircraft a ON a.id = f.aircraftId
+		WHERE f.id = ?`
+	lookupArgs := []interface{}{id}
+	var companyID string
+	if !hasGlobalCompanyAccess(c) {
+		var ok bool
+		companyID, ok = requireTenantCompany(c)
+		if !ok {
+			return
+		}
+		lookupQuery += " AND a.companyId = ?"
+		lookupArgs = append(lookupArgs, companyID)
 	}
-
-	if !exists {
+	err := h.db.QueryRow(lookupQuery, lookupArgs...).Scan(&recordingID)
+	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Flight not found"})
 		return
 	}
-
-	// Delete associated exceedances first (foreign key constraint)
-	_, err = h.db.Exec("DELETE FROM Exceedance WHERE flightId = ?", id)
 	if err != nil {
-		log.Printf("Warning: Failed to delete associated exceedances: %v", err)
+		respondDatabaseError(c, err)
+		return
+	}
+	var legCount int
+	err = h.db.QueryRow("SELECT COUNT(1) FROM FlightLeg WHERE recordingId = ?", recordingID).Scan(&legCount)
+	if err != nil {
+		respondDatabaseError(c, err)
+		return
+	}
+	if legCount > 1 {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":       "This source recording contains multiple flights. Recording-level deletion requires a separate explicit confirmation.",
+			"recordingId": recordingID, "flightCount": legCount,
+		})
+		return
 	}
 
-	// Delete CSV record from database
-	query := "DELETE FROM Csv WHERE id = ?"
-	result, err := h.db.Exec(query, id)
+	query := `DELETE FROM Csv WHERE id = ?`
+	deleteArgs := []interface{}{recordingID}
+	if !hasGlobalCompanyAccess(c) {
+		query += " AND aircraftId IN (SELECT id FROM Aircraft WHERE companyId = ?)"
+		deleteArgs = append(deleteArgs, companyID)
+	}
+	result, err := h.db.Exec(query, deleteArgs...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete flight", "details": err.Error()})
 		return
@@ -405,4 +550,104 @@ func (h *CSVHandler) DeleteCSV(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Flight deleted successfully"})
+}
+
+func optionalStringPointer(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func aggregateFlightAnalyses(analyses []flightAnalysisResponse, segmentationDiagnostics []detection.Diagnostic, flightCount int) flightAnalysisResponse {
+	aggregate := flightAnalysisResponse{
+		Status: "completed", EngineVersion: detection.EngineVersion, TriggerType: "upload",
+		Occurrences: []detection.Occurrence{}, Diagnostics: append([]detection.Diagnostic{}, segmentationDiagnostics...),
+	}
+	failed := 0
+	for _, analysis := range analyses {
+		if aggregate.SampleIntervalMs == 0 {
+			aggregate.SampleIntervalMs = analysis.SampleIntervalMs
+		}
+		if aggregate.RuleSetHash == "" {
+			aggregate.RuleSetHash = analysis.RuleSetHash
+		}
+		aggregate.RowCount += analysis.RowCount
+		aggregate.ApplicableRuleCount += analysis.ApplicableRuleCount
+		aggregate.EvaluatedRuleCount += analysis.EvaluatedRuleCount
+		aggregate.OccurrenceCount += analysis.OccurrenceCount
+		aggregate.Occurrences = append(aggregate.Occurrences, analysis.Occurrences...)
+		aggregate.Diagnostics = append(aggregate.Diagnostics, analysis.Diagnostics...)
+		if analysis.Status == "failed" {
+			failed++
+		} else if analysis.Status == "completed_with_warnings" {
+			aggregate.Status = "completed_with_warnings"
+		}
+	}
+	if flightCount > 1 {
+		aggregate.Status = "completed_with_warnings"
+		aggregate.Diagnostics = append(aggregate.Diagnostics, detection.Diagnostic{
+			Code: "MULTIPLE_FLIGHTS_DETECTED", Severity: "warning",
+			Message: fmt.Sprintf("%d independent recorder sessions were detected and analyzed as separate flights; review their metadata", flightCount), Count: 1,
+		})
+	}
+	if failed == len(analyses) && failed > 0 {
+		aggregate.Status = "failed"
+		aggregate.Error = "Analysis failed for every detected flight"
+	} else if failed > 0 {
+		aggregate.Status = "completed_with_warnings"
+		aggregate.Diagnostics = append(aggregate.Diagnostics, detection.Diagnostic{
+			Code: "FLIGHT_ANALYSIS_PARTIAL_FAILURE", Severity: "error",
+			Message: fmt.Sprintf("Analysis failed for %d of %d detected flights", failed, len(analyses)), Count: failed,
+		})
+	}
+	return aggregate
+}
+
+func streamCSVRange(c *gin.Context, path, flightName string, startRow, endRow int) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	reader.FieldsPerRecord = -1
+	header, err := reader.Read()
+	if err != nil {
+		return err
+	}
+	safeName := strings.NewReplacer("\"", "", "\r", "", "\n", "").Replace(strings.TrimSpace(flightName))
+	if safeName == "" {
+		safeName = "flight"
+	}
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.csv\"", safeName))
+	writer := csv.NewWriter(c.Writer)
+	if err = writer.Write(header); err != nil {
+		return err
+	}
+	recordNumber := 1
+	for {
+		record, readErr := reader.Read()
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return readErr
+		}
+		recordNumber++
+		if startRow > 0 && recordNumber < startRow {
+			continue
+		}
+		if endRow > 0 && recordNumber > endRow {
+			break
+		}
+		if err = writer.Write(record); err != nil {
+			return err
+		}
+	}
+	writer.Flush()
+	return writer.Error()
 }

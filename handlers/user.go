@@ -201,7 +201,7 @@ func (h *UserHandler) Login(c *gin.Context) {
 func (h *UserHandler) Logout(c *gin.Context) {
 	sessionID, exists := c.Get("sessionId")
 	userID, _ := c.Get("userId")
-	
+
 	if !exists || sessionID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "No active session"})
 		return
@@ -212,7 +212,7 @@ func (h *UserHandler) Logout(c *gin.Context) {
 		"UPDATE Session SET isActive = 0, updatedAt = ? WHERE id = ? AND userId = ?",
 		now.UnixMilli(), sessionID, userID,
 	)
-	
+
 	if err != nil {
 		log.Printf("Error logging out: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error logging out"})
@@ -238,7 +238,7 @@ func (h *UserHandler) LogoutAllDevices(c *gin.Context) {
 		"UPDATE Session SET isActive = 0, updatedAt = ? WHERE userId = ? AND isActive = 1",
 		now.UnixMilli(), userID,
 	)
-	
+
 	if err != nil {
 		log.Printf("Error logging out all devices: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error logging out"})
@@ -247,9 +247,9 @@ func (h *UserHandler) LogoutAllDevices(c *gin.Context) {
 
 	rowsAffected, _ := result.RowsAffected()
 	log.Printf("User %s logged out from %d device(s)", userID, rowsAffected)
-	
+
 	c.JSON(http.StatusOK, gin.H{
-		"message":        "Logged out from all devices",
+		"message":       "Logged out from all devices",
 		"sessionsEnded": rowsAffected,
 	})
 }
@@ -284,7 +284,7 @@ func (h *UserHandler) GetActiveSessions(c *gin.Context) {
 		}
 
 		session := map[string]interface{}{
-			"sessionId": id,
+			"sessionId":  id,
 			"deviceInfo": deviceInfo.String,
 			"ipAddress":  ipAddress.String,
 			"expiresAt":  time.UnixMilli(expiresAt),
@@ -302,10 +302,6 @@ func (h *UserHandler) GetActiveSessions(c *gin.Context) {
 
 // GetUsers retrieves all users with their company information
 func (h *UserHandler) GetUsers(c *gin.Context) {
-	// Get requesting user's role and company
-	userRole, _ := c.Get("userRole")
-	userCompanyID, companyExists := c.Get("userCompanyId")
-
 	query := `
 		SELECT 
 			u.id, u.email, u.role, u.fullName, u.designation, u.department, u.username, u.image, 
@@ -316,13 +312,14 @@ func (h *UserHandler) GetUsers(c *gin.Context) {
 		LEFT JOIN Company c ON u.companyId = c.id
 	`
 	args := []interface{}{}
-
-	// Non-admin users can only see users from their company
-	if userRole != models.RoleAdmin && userRole != models.RoleFDA {
-		if companyExists {
-			query += " WHERE u.companyId = ?"
-			args = append(args, userCompanyID)
+	if !hasGlobalCompanyAccess(c) {
+		companyID, ok := tenantCompanyID(c)
+		if !ok {
+			c.JSON(http.StatusOK, []models.User{})
+			return
 		}
+		query += " WHERE u.companyId = ?"
+		args = append(args, companyID)
 	}
 
 	query += " ORDER BY u.createdAt DESC"
@@ -434,6 +431,10 @@ func (h *UserHandler) GetUserByID(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error", "details": err.Error()})
 		return
 	}
+	if !canAccessUserRecord(c, user) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You cannot access this user"})
+		return
+	}
 
 	c.JSON(http.StatusOK, user)
 }
@@ -451,6 +452,10 @@ func (h *UserHandler) GetUserByEmail(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error", "details": err.Error()})
 		return
 	}
+	if !canAccessUserRecord(c, user) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You cannot access this user"})
+		return
+	}
 
 	c.JSON(http.StatusOK, user)
 }
@@ -458,6 +463,16 @@ func (h *UserHandler) GetUserByEmail(c *gin.Context) {
 // GetUsersByCompanyID retrieves all users for a company
 func (h *UserHandler) GetUsersByCompanyID(c *gin.Context) {
 	companyID := c.Param("companyId")
+	if !hasGlobalCompanyAccess(c) {
+		requestCompanyID, ok := requireTenantCompany(c)
+		if !ok {
+			return
+		}
+		if companyID != requestCompanyID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "You can only access users in your company"})
+			return
+		}
+	}
 
 	query := `
 		SELECT id, email, role, fullName, designation, department, username, image, 
@@ -526,6 +541,17 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 		log.Printf("CreateUser: Error binding JSON: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+	if !hasGlobalCompanyAccess(c) {
+		companyID, ok := requireTenantCompany(c)
+		if !ok {
+			return
+		}
+		if req.CompanyID != nil && *req.CompanyID != companyID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "You cannot create a user for another company"})
+			return
+		}
+		req.CompanyID = &companyID
 	}
 
 	log.Printf("CreateUser: Creating user with email: %s, role: %s", req.Email, req.Role)
@@ -610,40 +636,29 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 
 	now := time.Now()
 
-	// Build dynamic update query
-	// Authorization check - non-admins/non-FDA can only update users in their company
-	userRole, _ := c.Get("userRole")
-	userCompanyID, companyExists := c.Get("userCompanyId")
-
-	role, ok := userRole.(string)
-	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid user role"})
+	var targetUserCompanyID sql.NullString
+	err := h.db.QueryRow("SELECT companyId FROM User WHERE id = ?", id).Scan(&targetUserCompanyID)
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
-
-	// For non-admin/non-FDA users, check company access
-	if role != models.RoleAdmin && role != models.RoleFDA {
-		// First fetch the target user to get their company ID
-		var targetUserCompanyID *string
-		err := h.db.QueryRow("SELECT companyId FROM User WHERE id = ?", id).Scan(&targetUserCompanyID)
-		if err == sql.ErrNoRows {
-			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error checking user access", "details": err.Error()})
+		return
+	}
+	companyID := ""
+	if !hasGlobalCompanyAccess(c) {
+		var ok bool
+		companyID, ok = requireTenantCompany(c)
+		if !ok {
 			return
 		}
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error checking user access", "details": err.Error()})
-			return
-		}
-
-		// Check if the target user is in the same company as the requesting user
-		if !companyExists {
-			c.JSON(http.StatusForbidden, gin.H{"error": "You do not have permission to update users"})
-			return
-		}
-
-		requestingUserCompanyID := userCompanyID.(string)
-		if targetUserCompanyID == nil || *targetUserCompanyID != requestingUserCompanyID {
+		if !targetUserCompanyID.Valid || targetUserCompanyID.String != companyID {
 			c.JSON(http.StatusForbidden, gin.H{"error": "You can only update users in your company"})
+			return
+		}
+		if req.CompanyID != nil && *req.CompanyID != companyID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "You cannot move a user to another company"})
 			return
 		}
 	}
@@ -679,13 +694,13 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 		query += ", role = ?"
 		args = append(args, *req.Role)
 	}
-	if req.CompanyID != nil {
-		query += ", companyId = ?"
-		args = append(args, *req.CompanyID)
-	}
 	if req.IsActive != nil {
 		query += ", isActive = ?"
 		args = append(args, *req.IsActive)
+	}
+	if req.CompanyID != nil && hasGlobalCompanyAccess(c) {
+		query += ", companyId = ?"
+		args = append(args, *req.CompanyID)
 	}
 	if req.Password != nil {
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(*req.Password), bcrypt.DefaultCost)
@@ -699,6 +714,10 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 
 	query += " WHERE id = ?"
 	args = append(args, id)
+	if !hasGlobalCompanyAccess(c) {
+		query += " AND companyId = ?"
+		args = append(args, companyID)
+	}
 
 	result, err := h.db.Exec(query, args...)
 	if err != nil {
@@ -726,9 +745,17 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 // DeleteUser deletes a user
 func (h *UserHandler) DeleteUser(c *gin.Context) {
 	id := c.Param("id")
-
 	query := "DELETE FROM User WHERE id = ?"
-	result, err := h.db.Exec(query, id)
+	args := []interface{}{id}
+	if !hasGlobalCompanyAccess(c) {
+		companyID, ok := requireTenantCompany(c)
+		if !ok {
+			return
+		}
+		query += " AND companyId = ?"
+		args = append(args, companyID)
+	}
+	result, err := h.db.Exec(query, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error deleting user", "details": err.Error()})
 		return
@@ -746,9 +773,17 @@ func (h *UserHandler) DeleteUser(c *gin.Context) {
 // ActivateUser activates a user account
 func (h *UserHandler) ActivateUser(c *gin.Context) {
 	id := c.Param("id")
-
 	query := "UPDATE User SET isActive = 1, updatedAt = ? WHERE id = ?"
-	result, err := h.db.Exec(query, time.Now(), id)
+	args := []interface{}{time.Now(), id}
+	if !hasGlobalCompanyAccess(c) {
+		companyID, ok := requireTenantCompany(c)
+		if !ok {
+			return
+		}
+		query += " AND companyId = ?"
+		args = append(args, companyID)
+	}
+	result, err := h.db.Exec(query, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error activating user"})
 		return
@@ -766,9 +801,17 @@ func (h *UserHandler) ActivateUser(c *gin.Context) {
 // DeactivateUser deactivates a user account
 func (h *UserHandler) DeactivateUser(c *gin.Context) {
 	id := c.Param("id")
-
 	query := "UPDATE User SET isActive = 0, updatedAt = ? WHERE id = ?"
-	result, err := h.db.Exec(query, time.Now(), id)
+	args := []interface{}{time.Now(), id}
+	if !hasGlobalCompanyAccess(c) {
+		companyID, ok := requireTenantCompany(c)
+		if !ok {
+			return
+		}
+		query += " AND companyId = ?"
+		args = append(args, companyID)
+	}
+	result, err := h.db.Exec(query, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error deactivating user"})
 		return
@@ -781,6 +824,25 @@ func (h *UserHandler) DeactivateUser(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "User deactivated successfully"})
+}
+
+func canAccessUserRecord(c *gin.Context, target *models.User) bool {
+	requestUserID, ok := contextString(c, "userId")
+	if !ok {
+		return false
+	}
+	if requestUserID == target.ID {
+		return true
+	}
+	role, _ := contextString(c, "userRole")
+	if role != models.RoleAdmin && role != models.RoleFDA && role != models.RoleGatekeeper {
+		return false
+	}
+	if role == models.RoleAdmin || role == models.RoleFDA {
+		return true
+	}
+	companyID, ok := tenantCompanyID(c)
+	return ok && target.CompanyID != nil && *target.CompanyID == companyID
 }
 
 // Helper function to get user by ID

@@ -106,7 +106,8 @@ func main() {
 			companies.PUT("/:id/suspend", companyHandler.SuspendCompany)
 			companies.PUT("/:id/activate", companyHandler.ActivateCompany)
 		}
-		// Public company endpoint - any authenticated user can view company by ID
+		// Company detail is restricted to the caller's company; platform admins
+		// retain access for company administration.
 		api.GET("/companies/:id", middleware.AnyAuthenticatedUser(), companyHandler.GetCompanyByID)
 
 		// Subscription Management Routes (Admin Only)
@@ -163,6 +164,12 @@ func main() {
 			csvs.DELETE("/:id", middleware.AdminOrFDA(), csvHandler.DeleteCSV)
 		}
 		api.GET("/flight/:id", middleware.AnyAuthenticatedUser(), csvHandler.GetCSVByID)
+		recordings := api.Group("/recordings")
+		{
+			recordings.GET("/:id", middleware.AnyAuthenticatedUser(), csvHandler.GetRecordingReview)
+			recordings.PUT("/:id/flights", middleware.GatekeeperOrAbove(), csvHandler.UpdateRecordingFlights)
+			recordings.DELETE("/:id", middleware.AdminOrFDA(), csvHandler.DeleteRecording)
+		}
 
 		// Event Management Routes
 		events := api.Group("/events")

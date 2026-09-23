@@ -103,7 +103,7 @@ func AuthenticateToken() gin.HandlerFunc {
 				// Check if session has expired
 				if time.Now().UnixMilli() > expiresAt {
 					// Mark session as inactive
-					db.Exec("UPDATE Session SET isActive = 0, updatedAt = ? WHERE id = ?", 
+					db.Exec("UPDATE Session SET isActive = 0, updatedAt = ? WHERE id = ?",
 						time.Now().UnixMilli(), sessionID)
 					c.JSON(http.StatusUnauthorized, gin.H{
 						"error":   "Session expired",
@@ -115,44 +115,55 @@ func AuthenticateToken() gin.HandlerFunc {
 				}
 			}
 
-			// Set user info in context
+			// Fetch current authorization state from the database. JWT claims
+			// identify the session, but role and tenant membership can change.
+			if db != nil {
+				var companyID *string
+				var isActive bool
+				var currentRole string
+				err := db.QueryRow("SELECT companyId, isActive, role FROM User WHERE id = ?", userID).Scan(&companyID, &isActive, &currentRole)
+				if err == sql.ErrNoRows {
+					c.JSON(http.StatusUnauthorized, gin.H{"error": "User account no longer exists"})
+					c.Abort()
+					return
+				}
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "Error validating user account"})
+					c.Abort()
+					return
+				}
+				if !isActive {
+					c.JSON(http.StatusForbidden, gin.H{"error": "Account is deactivated"})
+					c.Abort()
+					return
+				}
+				userRole = currentRole
+
+				if companyID != nil {
+					c.Set("userCompanyId", *companyID)
+					var companyStatus string
+					if err := db.QueryRow("SELECT status FROM Company WHERE id = ?", *companyID).Scan(&companyStatus); err != nil {
+						c.JSON(http.StatusForbidden, gin.H{"error": "Company account is unavailable"})
+						c.Abort()
+						return
+					}
+					if companyStatus == "suspended" || companyStatus == "expired" {
+						c.JSON(http.StatusForbidden, gin.H{
+							"error":   "Company account is " + companyStatus,
+							"message": "Please contact support to reactivate your account",
+							"status":  companyStatus,
+						})
+						c.Abort()
+						return
+					}
+					c.Set("companyStatus", companyStatus)
+				}
+			}
+
 			c.Set("userId", userID)
 			c.Set("userEmail", userEmail)
 			c.Set("userRole", userRole)
 			c.Set("sessionId", sessionID)
-
-			// Fetch additional user info from database if needed
-			if db != nil {
-				var companyID *string
-				var isActive bool
-				err := db.QueryRow("SELECT companyId, isActive FROM User WHERE id = ?", userID).Scan(&companyID, &isActive)
-				if err == nil {
-					if !isActive {
-						c.JSON(http.StatusForbidden, gin.H{"error": "Account is deactivated"})
-						c.Abort()
-						return
-					}
-
-					if companyID != nil {
-						c.Set("userCompanyId", *companyID)
-
-						// Check if company is active
-						var companyStatus string
-						db.QueryRow("SELECT status FROM Company WHERE id = ?", *companyID).Scan(&companyStatus)
-						if companyStatus == "suspended" || companyStatus == "expired" {
-							c.JSON(http.StatusForbidden, gin.H{
-								"error":   "Company account is " + companyStatus,
-								"message": "Please contact support to reactivate your account",
-								"status":  companyStatus,
-							})
-							c.Abort()
-							return
-						}
-
-						c.Set("companyStatus", companyStatus)
-					}
-				}
-			}
 
 			c.Next()
 		} else {

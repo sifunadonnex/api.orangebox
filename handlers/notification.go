@@ -25,10 +25,25 @@ func (h *NotificationHandler) CreateNotifications(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	var companyID string
+	err := h.db.QueryRow(`SELECT a.companyId FROM FlightLeg f
+		JOIN Aircraft a ON a.id = f.aircraftId WHERE f.id = ?`, req.FlightID).Scan(&companyID)
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Flight not found"})
+		return
+	}
+	if err != nil {
+		respondDatabaseError(c, err)
+		return
+	}
+	if !canAccessCompany(c, companyID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You cannot create notifications for another company's flight"})
+		return
+	}
 
 	// Get all users who should be notified (e.g., admins, operators)
-	query := `SELECT id FROM User WHERE role IN ('admin', 'operator')`
-	rows, err := h.db.Query(query)
+	query := `SELECT id FROM User WHERE companyId = ? AND isActive = 1 AND role IN ('admin', 'fda', 'gatekeeper')`
+	rows, err := h.db.Query(query, companyID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error fetching users"})
 		return
@@ -87,6 +102,11 @@ func (h *NotificationHandler) CreateNotifications(c *gin.Context) {
 // GetUserNotifications retrieves notifications for a specific user
 func (h *NotificationHandler) GetUserNotifications(c *gin.Context) {
 	userID := c.Param("userId")
+	authenticatedUserID, ok := contextString(c, "userId")
+	if !ok || userID != authenticatedUserID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You can only access your own notifications"})
+		return
+	}
 
 	query := `SELECT n.id, n.userId, n.exceedanceId, n.message, n.level, n.isRead, n.createdAt, n.updatedAt
 			  FROM Notification n
@@ -130,10 +150,15 @@ func (h *NotificationHandler) GetUserNotifications(c *gin.Context) {
 // MarkNotificationAsRead marks a notification as read
 func (h *NotificationHandler) MarkNotificationAsRead(c *gin.Context) {
 	id := c.Param("id")
+	userID, ok := contextString(c, "userId")
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authenticated user was not found"})
+		return
+	}
 	now := time.Now()
 
-	query := `UPDATE Notification SET isRead = true, updatedAt = ? WHERE id = ?`
-	result, err := h.db.Exec(query, now.UnixMilli(), id)
+	query := `UPDATE Notification SET isRead = true, updatedAt = ? WHERE id = ? AND userId = ?`
+	result, err := h.db.Exec(query, now.UnixMilli(), id, userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating notification"})
 		return
@@ -151,6 +176,11 @@ func (h *NotificationHandler) MarkNotificationAsRead(c *gin.Context) {
 // MarkAllNotificationsAsRead marks all notifications as read for a user
 func (h *NotificationHandler) MarkAllNotificationsAsRead(c *gin.Context) {
 	userID := c.Param("userId")
+	authenticatedUserID, ok := contextString(c, "userId")
+	if !ok || userID != authenticatedUserID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You can only update your own notifications"})
+		return
+	}
 	now := time.Now()
 
 	query := `UPDATE Notification SET isRead = true, updatedAt = ? WHERE userId = ? AND isRead = false`
