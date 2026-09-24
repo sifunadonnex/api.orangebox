@@ -19,21 +19,27 @@ import (
 )
 
 type flightAnalysisResponse struct {
-	RunID               string                 `json:"runId"`
-	Status              string                 `json:"status"`
-	EngineVersion       string                 `json:"engineVersion"`
-	TimingSource        string                 `json:"timingSource,omitempty"`
-	SampleIntervalMs    int64                  `json:"sampleIntervalMs"`
-	RowCount            int                    `json:"rowCount"`
-	ApplicableRuleCount int                    `json:"applicableRuleCount"`
-	EvaluatedRuleCount  int                    `json:"evaluatedRuleCount"`
-	OccurrenceCount     int                    `json:"occurrenceCount"`
-	Occurrences         []detection.Occurrence `json:"occurrences"`
-	Diagnostics         []detection.Diagnostic `json:"diagnostics"`
-	RuleSetHash         string                 `json:"ruleSetHash"`
-	TriggerType         string                 `json:"triggerType"`
-	Reused              bool                   `json:"reused"`
-	Error               string                 `json:"error,omitempty"`
+	RunID               string                     `json:"runId"`
+	Status              string                     `json:"status"`
+	EngineVersion       string                     `json:"engineVersion"`
+	TimingSource        string                     `json:"timingSource,omitempty"`
+	SampleIntervalMs    int64                      `json:"sampleIntervalMs"`
+	RowCount            int                        `json:"rowCount"`
+	ApplicableRuleCount int                        `json:"applicableRuleCount"`
+	EvaluatedRuleCount  int                        `json:"evaluatedRuleCount"`
+	OccurrenceCount     int                        `json:"occurrenceCount"`
+	Occurrences         []detection.Occurrence     `json:"occurrences"`
+	Diagnostics         []detection.Diagnostic     `json:"diagnostics"`
+	RuleSetHash         string                     `json:"ruleSetHash"`
+	TriggerType         string                     `json:"triggerType"`
+	Reused              bool                       `json:"reused"`
+	Error               string                     `json:"error,omitempty"`
+	OccurrenceLocations []*eventOccurrenceLocation `json:"-"`
+}
+
+type eventOccurrenceLocation struct {
+	Point       detection.ReplayPoint
+	TimeDeltaMs int64
 }
 
 type flightAnalysisOptions struct {
@@ -120,11 +126,45 @@ func (h *CSVHandler) analyzeFlight(path, filename string, flight *models.FlightL
 	if len(result.Diagnostics) > 0 {
 		response.Status = "completed_with_warnings"
 	}
+	response.OccurrenceLocations = h.matchOccurrenceLocations(path, flight, response)
 
 	if err = h.persistDetectionResult(runID, filename, flight, aircraft, definitions, response); err != nil {
 		return h.failFlightAnalysis(flight.ID, runID, response, fmt.Errorf("persist detection result: %w", err), options.UpdateFlightOnFail)
 	}
 	return response
+}
+
+func (h *CSVHandler) matchOccurrenceLocations(path string, flight *models.FlightLeg, response flightAnalysisResponse) []*eventOccurrenceLocation {
+	locations := make([]*eventOccurrenceLocation, len(response.Occurrences))
+	if len(response.Occurrences) == 0 {
+		return locations
+	}
+
+	replay, err := detection.BuildReplay(path, detection.ReplayOptions{
+		SampleIntervalMs: response.SampleIntervalMs,
+		MaxPoints:        response.RowCount + 1,
+		StartRow:         flight.StartRow,
+		EndRow:           valueOrZeroInt(flight.EndRow),
+		RebaseTime:       true,
+	})
+	if err != nil || !replay.Supported {
+		return locations
+	}
+
+	tolerance := response.SampleIntervalMs * 2
+	if tolerance < 5000 {
+		tolerance = 5000
+	}
+	if tolerance > 60000 {
+		tolerance = 60000
+	}
+	for index, occurrence := range response.Occurrences {
+		point, delta, found := detection.NearestReplayPoint(replay.Points, occurrence.StartTimeMs, tolerance)
+		if found {
+			locations[index] = &eventOccurrenceLocation{Point: point, TimeDeltaMs: delta}
+		}
+	}
+	return locations
 }
 
 func (h *CSVHandler) loadApplicableDefinitions(aircraft models.Aircraft, definitionID string) ([]detection.Definition, error) {
@@ -293,7 +333,7 @@ func (h *CSVHandler) persistDetectionResult(runID, filename string, flight *mode
 			return err
 		}
 	}
-	for _, occurrence := range response.Occurrences {
+	for occurrenceIndex, occurrence := range response.Occurrences {
 		evidenceJSON, marshalErr := json.Marshal(struct {
 			SchemaVersion int    `json:"schemaVersion"`
 			EngineVersion string `json:"engineVersion"`
@@ -315,6 +355,23 @@ func (h *CSVHandler) persistDetectionResult(runID, filename string, flight *mode
 			occurrence.Value, occurrence.RuleHash, now, now)
 		if err != nil {
 			return err
+		}
+		if occurrenceIndex < len(response.OccurrenceLocations) {
+			location := response.OccurrenceLocations[occurrenceIndex]
+			if location != nil {
+				quality := "near"
+				if location.TimeDeltaMs == 0 {
+					quality = "exact"
+				}
+				if _, err = tx.Exec(`INSERT INTO ExceedanceLocation
+					(exceedanceId, latitude, longitude, altitude, matchedTimeMs, timeDeltaMs,
+					 source, quality, createdAt, updatedAt)
+					VALUES (?, ?, ?, ?, ?, ?, 'replay_nearest_time', ?, ?, ?)`,
+					exceedanceID, location.Point.Latitude, location.Point.Longitude,
+					location.Point.Altitude, location.Point.TimeMs, location.TimeDeltaMs, quality, now, now); err != nil {
+					return err
+				}
+			}
 		}
 		if err = createDetectionNotifications(tx, aircraft.CompanyID, exceedanceID, occurrence, now); err != nil {
 			return err

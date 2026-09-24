@@ -59,6 +59,7 @@ func main() {
 	csvHandler := handlers.NewCSVHandler(db)
 	eventHandler := handlers.NewEventHandler(db)
 	exceedanceHandler := handlers.NewExceedanceHandler(db)
+	reportHandler := handlers.NewReportHandler(db)
 	notificationHandler := handlers.NewNotificationHandler(db)
 
 	// Set database for auth middleware
@@ -195,6 +196,16 @@ func main() {
 			exceedances.POST("", middleware.GatekeeperOrAbove(), exceedanceHandler.CreateExceedances)
 			exceedances.PUT("/:id", middleware.AdminOrFDA(), exceedanceHandler.UpdateExceedance)
 			exceedances.DELETE("/:id", middleware.AdminOrFDA(), exceedanceHandler.DeleteExceedance)
+		}
+
+		reports := api.Group("/reports")
+		{
+			reports.GET("/options", middleware.AnyAuthenticatedUser(), reportHandler.GetOptions)
+			reports.GET("/overview", middleware.AnyAuthenticatedUser(), reportHandler.GetOverview)
+			reports.GET("/events/aggregate", middleware.AnyAuthenticatedUser(), reportHandler.GetEventAggregate)
+			reports.GET("/events/comparison", middleware.AnyAuthenticatedUser(), reportHandler.GetEventComparison)
+			reports.GET("/events/benchmark", middleware.AnyAuthenticatedUser(), reportHandler.GetEventBenchmark)
+			reports.GET("/events/location", middleware.AnyAuthenticatedUser(), reportHandler.GetEventLocation)
 		}
 
 		// Notification Routes

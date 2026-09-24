@@ -128,6 +128,22 @@ func TestBuildReplayDerivesTrackWhenHeadingIsMissing(t *testing.T) {
 	}
 }
 
+func TestNearestReplayPointUsesClosestSampleWithinTolerance(t *testing.T) {
+	points := []ReplayPoint{
+		{TimeMs: 1000, Latitude: -1, Longitude: 36},
+		{TimeMs: 3000, Latitude: -2, Longitude: 37},
+		{TimeMs: 5000, Latitude: -3, Longitude: 38},
+	}
+
+	point, delta, ok := NearestReplayPoint(points, 3800, 1000)
+	if !ok || point.TimeMs != 3000 || delta != 800 {
+		t.Fatalf("expected the 3000ms sample at delta 800ms, got point=%+v delta=%d ok=%v", point, delta, ok)
+	}
+	if _, delta, ok = NearestReplayPoint(points, 7000, 1000); ok || delta != 2000 {
+		t.Fatalf("expected a 2000ms sample gap to be rejected, got delta=%d ok=%v", delta, ok)
+	}
+}
+
 func writeReplayCSV(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "flight.csv")

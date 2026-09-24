@@ -82,6 +82,43 @@ type ReplayResult struct {
 	Diagnostics        []Diagnostic                 `json:"diagnostics"`
 }
 
+// NearestReplayPoint finds the position sample closest to a flight-relative
+// timestamp. Callers provide an explicit tolerance so gaps in recorded
+// position data are never presented as precise event locations.
+func NearestReplayPoint(points []ReplayPoint, targetTimeMs, toleranceMs int64) (ReplayPoint, int64, bool) {
+	if len(points) == 0 || toleranceMs < 0 {
+		return ReplayPoint{}, 0, false
+	}
+
+	index := sort.Search(len(points), func(index int) bool {
+		return points[index].TimeMs >= targetTimeMs
+	})
+	candidates := make([]int, 0, 2)
+	if index < len(points) {
+		candidates = append(candidates, index)
+	}
+	if index > 0 {
+		candidates = append(candidates, index-1)
+	}
+
+	bestDelta := int64(math.MaxInt64)
+	bestIndex := -1
+	for _, candidate := range candidates {
+		delta := points[candidate].TimeMs - targetTimeMs
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta < bestDelta {
+			bestDelta = delta
+			bestIndex = candidate
+		}
+	}
+	if bestIndex < 0 || bestDelta > toleranceMs {
+		return ReplayPoint{}, bestDelta, false
+	}
+	return points[bestIndex], bestDelta, true
+}
+
 var replayAliases = map[string][]string{
 	"latitude":      {"LATITUDE", "LAT", "GPSLATITUDE", "GPSLAT", "LATDEG", "LATITUDEDEG", "GPSLATITUDEDEG", "POSITIONLATITUDE", "POSLAT"},
 	"longitude":     {"LONGITUDE", "LON", "LONG", "LNG", "GPSLONGITUDE", "GPSLON", "LONDEG", "LONGITUDEDEG", "GPSLONGITUDEDEG", "POSITIONLONGITUDE", "POSLON"},

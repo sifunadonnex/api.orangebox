@@ -51,6 +51,11 @@ func TestPersistDetectionResultSupersedesOnlyAffectedDefinition(t *testing.T) {
 			endTimeMs INTEGER, durationMs INTEGER, peakValue REAL, ruleHash TEXT,
 			isCurrent INTEGER, supersededAt INTEGER, createdAt INTEGER, updatedAt INTEGER
 		);
+		CREATE TABLE ExceedanceLocation (
+			exceedanceId TEXT PRIMARY KEY, latitude REAL, longitude REAL, altitude REAL,
+			matchedTimeMs INTEGER, timeDeltaMs INTEGER, source TEXT, quality TEXT,
+			createdAt INTEGER, updatedAt INTEGER
+		);
 		CREATE TABLE Notification (
 			id TEXT PRIMARY KEY, userId TEXT, exceedanceId TEXT, message TEXT, level TEXT,
 			isRead INTEGER, createdAt INTEGER, updatedAt INTEGER
@@ -89,6 +94,10 @@ func TestPersistDetectionResultSupersedesOnlyAffectedDefinition(t *testing.T) {
 			DurationMs: 1, PointCount: 1,
 		}},
 		Diagnostics: []detection.Diagnostic{},
+		OccurrenceLocations: []*eventOccurrenceLocation{{
+			Point:       detection.ReplayPoint{TimeMs: 2000, Latitude: -1.2864, Longitude: 36.8172},
+			TimeDeltaMs: 0,
+		}},
 	}
 	if err = handler.persistDetectionResult("new-run", "flight.csv", &flight, aircraft, definitions, response); err != nil {
 		t.Fatal(err)
@@ -109,6 +118,17 @@ func TestPersistDetectionResultSupersedesOnlyAffectedDefinition(t *testing.T) {
 	var newCount int
 	if err = db.QueryRow("SELECT COUNT(1) FROM Exceedance WHERE eventId = 'a-v2' AND isCurrent = 1").Scan(&newCount); err != nil || newCount != 1 {
 		t.Fatalf("expected one current replacement occurrence, count=%d err=%v", newCount, err)
+	}
+	var latitude, longitude float64
+	var matchedTime int64
+	var quality string
+	if err = db.QueryRow(`SELECT l.latitude, l.longitude, l.matchedTimeMs, l.quality
+		FROM ExceedanceLocation l JOIN Exceedance e ON e.id = l.exceedanceId
+		WHERE e.eventId = 'a-v2'`).Scan(&latitude, &longitude, &matchedTime, &quality); err != nil {
+		t.Fatal(err)
+	}
+	if latitude != -1.2864 || longitude != 36.8172 || matchedTime != 2000 || quality != "exact" {
+		t.Fatalf("unexpected persisted occurrence location: lat=%f lon=%f time=%d quality=%s", latitude, longitude, matchedTime, quality)
 	}
 	var oldEvaluationCurrent, unrelatedEvaluationCurrent int
 	if err = db.QueryRow("SELECT isCurrent FROM DetectionRunDefinition WHERE detectionRunId = 'old-a-run'").Scan(&oldEvaluationCurrent); err != nil {
