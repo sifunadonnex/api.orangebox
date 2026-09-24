@@ -46,6 +46,7 @@ type ReplayMeasurement struct {
 
 type ReplayPoint struct {
 	TimeMs         int64    `json:"timeMs"`
+	GMTTimeMs      *int64   `json:"gmtTimeMs,omitempty"`
 	Latitude       float64  `json:"latitude"`
 	Longitude      float64  `json:"longitude"`
 	Altitude       *float64 `json:"altitude,omitempty"`
@@ -188,7 +189,7 @@ func BuildReplay(path string, options ReplayOptions) (ReplayResult, error) {
 	result.Capabilities.Timing = true
 
 	if altitude, ok := result.Measurements["altitude"]; ok && altitude.SourceUnit == "" {
-		diagnostics.add("REPLAY_ALTITUDE_UNIT_UNKNOWN", "warning", "Altitude data is available, but its unit could not be established; elevated 3D replay is disabled for this flight", altitude.Source)
+		diagnostics.add("REPLAY_ALTITUDE_UNIT_UNKNOWN", "warning", "Altitude data is available, but its unit could not be established; values are shown in recorded units", altitude.Source)
 	} else if ok && altitude.Inferred {
 		diagnostics.add("REPLAY_ALTITUDE_UNIT_INFERRED", "warning", "Altitude units were inferred from the aviation parameter name; verify the source definition when precise vertical placement is required", altitude.Source)
 	}
@@ -205,7 +206,7 @@ func BuildReplay(path string, options ReplayOptions) (ReplayResult, error) {
 		}
 		altitude, altitudeMeters := normalizedAltitude(current.values, keys["altitude"], result.Measurements["altitude"])
 		point := ReplayPoint{
-			TimeMs: current.timeMs, Latitude: latitude, Longitude: longitude,
+			TimeMs: current.timeMs, GMTTimeMs: recordedGMTMillis(current.values), Latitude: latitude, Longitude: longitude,
 			Altitude: altitude, AltitudeMeters: altitudeMeters,
 			GroundSpeed:   normalizedSpeed(current.values, keys["groundSpeed"], result.Measurements["groundSpeed"]),
 			Airspeed:      normalizedSpeed(current.values, keys["airspeed"], result.Measurements["airspeed"]),
@@ -442,6 +443,18 @@ func normalizedAltitude(values map[string]string, key string, measurement Replay
 	default:
 		return raw, nil
 	}
+}
+
+func recordedGMTMillis(values map[string]string) *int64 {
+	hour, hourErr := strconv.Atoi(strings.TrimSpace(values["GMTHOURS"]))
+	minute, minuteErr := strconv.Atoi(strings.TrimSpace(values["GMTMINUTES"]))
+	second, secondErr := strconv.ParseFloat(strings.TrimSpace(values["GMTSECONDS"]), 64)
+	if hourErr != nil || minuteErr != nil || secondErr != nil || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second >= 60 || !isFinite(second) {
+		return nil
+	}
+
+	milliseconds := int64(math.Round((float64(hour*3600+minute*60) + second) * 1000))
+	return &milliseconds
 }
 
 func normalizedSpeed(values map[string]string, key string, measurement ReplayMeasurement) *float64 {

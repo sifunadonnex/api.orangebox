@@ -58,6 +58,22 @@ func TestBuildReplaySupportsElapsedTimeAndCanonicalCoordinates(t *testing.T) {
 	}
 }
 
+func TestBuildReplayPreservesRecordedGMTAlongsideElapsedClock(t *testing.T) {
+	path := writeReplayCSV(t, "Time(sec),GMT Hours,GMT Minutes,GMT Seconds,Latitude,Longitude\n"+
+		"10,6,38,16.25,-1.3,36.8\n"+
+		"11,6,38,17.25,-1.2,36.7\n")
+	result, err := BuildReplay(path, ReplayOptions{SampleIntervalMs: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Supported || result.TimingSource != "timesec" || len(result.Points) != 2 {
+		t.Fatalf("unexpected replay result: %#v", result)
+	}
+	if result.Points[0].GMTTimeMs == nil || *result.Points[0].GMTTimeMs != 23896250 {
+		t.Fatalf("expected recorded GMT time to be preserved: %#v", result.Points[0])
+	}
+}
+
 func TestBuildReplaySupportsExpandedAircraftHeaderAliases(t *testing.T) {
 	path := writeReplayCSV(t, "Elapsed Seconds,Latitude (deg),Longitude (deg),Baro Altitude,GS Kts,Flight Stage\n"+
 		"0,-1.3,36.8,5000,120,CLIMB\n"+
@@ -94,7 +110,7 @@ func TestBuildReplayConvertsExplicitMetricMeasurements(t *testing.T) {
 	}
 }
 
-func TestBuildReplayLeavesUnknownAltitudeOutOf3DTrack(t *testing.T) {
+func TestBuildReplayPreservesUnknownAltitudeInRecordedUnits(t *testing.T) {
 	path := writeReplayCSV(t, "Time(sec),Latitude,Longitude,Altitude\n0,-1.3,36.8,1000\n1,-1.29,36.81,1100\n")
 	result, err := BuildReplay(path, ReplayOptions{})
 	if err != nil {
