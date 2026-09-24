@@ -207,6 +207,8 @@ func main() {
 			reports.GET("/events/benchmark", middleware.AnyAuthenticatedUser(), reportHandler.GetEventBenchmark)
 			reports.GET("/events/location", middleware.AnyAuthenticatedUser(), reportHandler.GetEventLocation)
 			reports.GET("/events/flights", middleware.AnyAuthenticatedUser(), reportHandler.GetEventfulFlights)
+			reports.GET("/kpv/options", middleware.AnyAuthenticatedUser(), reportHandler.GetKPVOptions)
+			reports.GET("/kpv/distribution", middleware.AnyAuthenticatedUser(), reportHandler.GetKPVDistribution)
 		}
 
 		// Notification Routes

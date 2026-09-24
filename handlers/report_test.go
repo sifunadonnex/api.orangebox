@@ -30,7 +30,7 @@ func reportTestDB(t *testing.T) *sql.DB {
 		`CREATE TABLE EventDefinitionVersion (id TEXT PRIMARY KEY, definitionId TEXT NOT NULL, version INTEGER NOT NULL, eventName TEXT, displayName TEXT)`,
 		`CREATE TABLE DetectionRun (id TEXT PRIMARY KEY, flightId TEXT NOT NULL, flightLegId TEXT, status TEXT NOT NULL)`,
 		`CREATE TABLE DetectionRunDefinition (detectionRunId TEXT NOT NULL, definitionId TEXT NOT NULL, status TEXT NOT NULL, isCurrent INTEGER NOT NULL)`,
-		`CREATE TABLE Exceedance (id TEXT PRIMARY KEY, flightId TEXT NOT NULL, flightLegId TEXT, aircraftId TEXT NOT NULL, flightPhase TEXT NOT NULL, parameterName TEXT, eventStatus TEXT NOT NULL, exceedanceLevel TEXT, eventId TEXT, isCurrent INTEGER NOT NULL)`,
+		`CREATE TABLE Exceedance (id TEXT PRIMARY KEY, flightId TEXT NOT NULL, flightLegId TEXT, aircraftId TEXT NOT NULL, flightPhase TEXT NOT NULL, parameterName TEXT, eventStatus TEXT NOT NULL, exceedanceLevel TEXT, eventId TEXT, isCurrent INTEGER NOT NULL, peakValue REAL, exceedanceValues TEXT, createdAt INTEGER)`,
 		`CREATE TABLE ExceedanceLocation (exceedanceId TEXT PRIMARY KEY, latitude REAL NOT NULL, longitude REAL NOT NULL, altitude REAL, matchedTimeMs INTEGER NOT NULL, timeDeltaMs INTEGER NOT NULL, source TEXT NOT NULL, quality TEXT NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL)`,
 		`INSERT INTO Company VALUES ('company-a', 'Alpha Air', 'active'), ('company-b', 'Bravo Air', 'active')`,
 		`INSERT INTO Aircraft VALUES
@@ -51,9 +51,9 @@ func reportTestDB(t *testing.T) *sql.DB {
 			('run-a', 'definition-2', 'evaluated', 1),
 			('run-b', 'definition-1', 'evaluated', 1)`,
 		`INSERT INTO Exceedance VALUES
-			('event-a-valid', 'flight-a', 'flight-a', 'aircraft-a', 'CLIMB', 'IAS', 'Valid', 'High', 'version-1', 1),
-			('event-a-pending', 'flight-a', 'flight-a', 'aircraft-a', 'APPROACH', 'VSI', 'Pending', 'Critical', 'version-2', 1),
-			('event-b-valid', 'flight-b', 'flight-b', 'aircraft-b', 'APPROACH', 'IAS', 'Valid', 'Low', 'version-1', 1)`,
+			('event-a-valid', 'flight-a', 'flight-a', 'aircraft-a', 'CLIMB', 'IAS', 'Valid', 'High', 'version-1', 1, 250, '{"unit":"kt"}', 1),
+			('event-a-pending', 'flight-a', 'flight-a', 'aircraft-a', 'APPROACH', 'VSI', 'Pending', 'Critical', 'version-2', 1, 1800, '{"unit":"ft/min"}', 1),
+			('event-b-valid', 'flight-b', 'flight-b', 'aircraft-b', 'APPROACH', 'IAS', 'Valid', 'Low', 'version-1', 1, 150, '{"unit":"kt"}', 1)`,
 		`INSERT INTO ExceedanceLocation VALUES
 			('event-a-valid', -1.2864, 36.8172, 5000, 10000, 0, 'replay_nearest_time', 'exact', 1, 1),
 			('event-b-valid', -6.7924, 39.2083, 8000, 20000, 250, 'replay_nearest_time', 'near', 1, 1)`,
@@ -251,7 +251,7 @@ func TestEventBenchmarkReturnsAnonymizedTenantPercentilesAndNamedOversightPeers(
 			}
 			if flightIndex <= peerOccurrences {
 				eventID := fmt.Sprintf("peer-%d-event-%02d", peerIndex, flightIndex)
-				if _, err := db.Exec(`INSERT INTO Exceedance VALUES (?, ?, ?, ?, 'CLIMB', 'IAS', 'Valid', 'High', 'version-1', 1)`, eventID, flightID, flightID, aircraftID); err != nil {
+				if _, err := db.Exec(`INSERT INTO Exceedance VALUES (?, ?, ?, ?, 'CLIMB', 'IAS', 'Valid', 'High', 'version-1', 1, 200, '{"unit":"kt"}', 1)`, eventID, flightID, flightID, aircraftID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -352,5 +352,51 @@ func TestEventfulFlightsAreScopedSummarizedAndPaginated(t *testing.T) {
 	}
 	if adminResponse.Flights[0].FlightID != "flight-b" || adminResponse.Flights[0].CompanyName != "Bravo Air" {
 		t.Fatalf("recent FDA result should include identified cross-company flight: %+v", adminResponse.Flights[0])
+	}
+}
+
+func TestKPVDistributionUsesAuthorizedReviewedNumericEvidence(t *testing.T) {
+	handler := NewReportHandler(reportTestDB(t))
+	tenantOptionsContext, tenantOptionsRecorder := reportContext(http.MethodGet, "/api/reports/kpv/options", models.RoleUser, "company-a")
+	handler.GetKPVOptions(tenantOptionsContext)
+	if tenantOptionsRecorder.Code != http.StatusOK {
+		t.Fatalf("expected tenant options 200, got %d: %s", tenantOptionsRecorder.Code, tenantOptionsRecorder.Body.String())
+	}
+	var tenantOptions models.KPVOptionsResponse
+	if err := json.Unmarshal(tenantOptionsRecorder.Body.Bytes(), &tenantOptions); err != nil {
+		t.Fatal(err)
+	}
+	if len(tenantOptions.Options) != 1 || tenantOptions.Options[0].EventDefinitionID != "definition-1" || tenantOptions.Options[0].SampleCount != 1 {
+		t.Fatalf("tenant KPV options leaked pending or cross-company evidence: %+v", tenantOptions.Options)
+	}
+	tenantPath := "/api/reports/kpv/distribution?eventDefinitionId=definition-1&parameterName=IAS&unit=kt&splitBy=company&binCount=5"
+	tenantContext, tenantRecorder := reportContext(http.MethodGet, tenantPath, models.RoleGatekeeper, "company-a")
+	handler.GetKPVDistribution(tenantContext)
+	if tenantRecorder.Code != http.StatusOK {
+		t.Fatalf("expected tenant distribution 200, got %d: %s", tenantRecorder.Code, tenantRecorder.Body.String())
+	}
+	var tenantDistribution models.KPVDistributionResponse
+	if err := json.Unmarshal(tenantRecorder.Body.Bytes(), &tenantDistribution); err != nil {
+		t.Fatal(err)
+	}
+	if tenantDistribution.Statistics.Count != 1 || len(tenantDistribution.Groups) != 1 || tenantDistribution.Groups[0].Key != "company-a" {
+		t.Fatalf("tenant KPV distribution leaked cross-company samples: %+v", tenantDistribution)
+	}
+
+	adminPath := "/api/reports/kpv/distribution?eventDefinitionId=definition-1&parameterName=IAS&unit=kt&splitBy=company&binCount=5"
+	adminContext, adminRecorder := reportContext(http.MethodGet, adminPath, models.RoleAdmin, "")
+	handler.GetKPVDistribution(adminContext)
+	if adminRecorder.Code != http.StatusOK {
+		t.Fatalf("expected admin distribution 200, got %d: %s", adminRecorder.Code, adminRecorder.Body.String())
+	}
+	var response models.KPVDistributionResponse
+	if err := json.Unmarshal(adminRecorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Statistics.Count != 2 || response.Statistics.Mean != 200 || response.Statistics.Median != 200 {
+		t.Fatalf("unexpected KPV statistics: %+v", response.Statistics)
+	}
+	if len(response.Groups) != 2 || len(response.Histogram) != 2 {
+		t.Fatalf("expected company comparison and bounded histogram, got groups=%+v histogram=%+v", response.Groups, response.Histogram)
 	}
 }

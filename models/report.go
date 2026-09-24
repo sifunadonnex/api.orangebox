@@ -244,3 +244,76 @@ type EventfulFlightsResponse struct {
 	Flights    []EventfulFlight       `json:"flights"`
 	AsOf       string                 `json:"asOf"`
 }
+
+type KPVOption struct {
+	EventDefinitionID string `json:"eventDefinitionId"`
+	EventLabel        string `json:"eventLabel"`
+	ParameterName     string `json:"parameterName"`
+	Unit              string `json:"unit"`
+	SampleCount       int    `json:"sampleCount"`
+	AffectedFlights   int    `json:"affectedFlights"`
+}
+
+type KPVOptionsResponse struct {
+	Scope   ReportScopeResponse `json:"scope"`
+	Filters ReportFilters       `json:"filters"`
+	Options []KPVOption         `json:"options"`
+}
+
+type KPVStatistics struct {
+	Count        int     `json:"count"`
+	Minimum      float64 `json:"minimum"`
+	Maximum      float64 `json:"maximum"`
+	Mean         float64 `json:"mean"`
+	Median       float64 `json:"median"`
+	StandardDev  float64 `json:"standardDeviation"`
+	P25          float64 `json:"p25"`
+	P75          float64 `json:"p75"`
+	IQR          float64 `json:"iqr"`
+	LowerFence   float64 `json:"lowerFence"`
+	UpperFence   float64 `json:"upperFence"`
+	OutlierCount int     `json:"outlierCount"`
+}
+
+type KPVHistogramBin struct {
+	LowerBound float64 `json:"lowerBound"`
+	UpperBound float64 `json:"upperBound"`
+	Count      int     `json:"count"`
+	Percentage float64 `json:"percentage"`
+}
+
+type KPVGroup struct {
+	Key         string  `json:"key"`
+	Label       string  `json:"label"`
+	SampleCount int     `json:"sampleCount"`
+	Minimum     float64 `json:"minimum"`
+	Maximum     float64 `json:"maximum"`
+	Mean        float64 `json:"mean"`
+	Median      float64 `json:"median"`
+}
+
+type KPVOutlier struct {
+	OccurrenceID string  `json:"occurrenceId"`
+	FlightID     string  `json:"flightId"`
+	Registration string  `json:"registration"`
+	CompanyName  string  `json:"companyName,omitempty"`
+	Value        float64 `json:"value"`
+	OccurredAt   int64   `json:"occurredAt"`
+}
+
+type KPVDistributionResponse struct {
+	Scope             ReportScopeResponse `json:"scope"`
+	Filters           ReportFilters       `json:"filters"`
+	EventDefinitionID string              `json:"eventDefinitionId"`
+	EventLabel        string              `json:"eventLabel"`
+	ParameterName     string              `json:"parameterName"`
+	Unit              string              `json:"unit"`
+	SplitBy           string              `json:"splitBy"`
+	BinCount          int                 `json:"binCount"`
+	Statistics        KPVStatistics       `json:"statistics"`
+	Histogram         []KPVHistogramBin   `json:"histogram"`
+	Groups            []KPVGroup          `json:"groups"`
+	Outliers          []KPVOutlier        `json:"outliers"`
+	OutliersTruncated bool                `json:"outliersTruncated"`
+	AsOf              string              `json:"asOf"`
+}
