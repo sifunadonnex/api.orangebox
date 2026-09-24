@@ -199,3 +199,48 @@ type EventLocationResponse struct {
 	Cells     []EventLocationCell   `json:"cells"`
 	AsOf      string                `json:"asOf"`
 }
+
+type EventfulFlightSeverity struct {
+	Critical int `json:"critical"`
+	High     int `json:"high"`
+	Medium   int `json:"medium"`
+	Low      int `json:"low"`
+	Other    int `json:"other"`
+}
+
+type EventfulFlight struct {
+	FlightID     string                 `json:"flightId"`
+	FlightName   string                 `json:"flightName"`
+	AircraftID   string                 `json:"aircraftId"`
+	Registration string                 `json:"registration"`
+	CompanyID    string                 `json:"companyId,omitempty"`
+	CompanyName  string                 `json:"companyName,omitempty"`
+	Departure    string                 `json:"departure,omitempty"`
+	Destination  string                 `json:"destination,omitempty"`
+	FlightHours  string                 `json:"flightHours,omitempty"`
+	FlightStatus string                 `json:"flightStatus,omitempty"`
+	OccurredAt   int64                  `json:"occurredAt"`
+	Occurrences  int                    `json:"occurrences"`
+	EventTypes   int                    `json:"eventTypes"`
+	EventCodes   []string               `json:"eventCodes"`
+	Phases       []string               `json:"phases"`
+	Severity     EventfulFlightSeverity `json:"severity"`
+}
+
+type EventfulFlightsSummary struct {
+	TotalEventfulFlights int `json:"totalEventfulFlights"`
+	TotalOccurrences     int `json:"totalOccurrences"`
+	HighCriticalFlights  int `json:"highCriticalFlights"`
+}
+
+type EventfulFlightsResponse struct {
+	Scope      ReportScopeResponse    `json:"scope"`
+	Filters    ReportFilters          `json:"filters"`
+	Order      string                 `json:"order"`
+	Page       int                    `json:"page"`
+	PageSize   int                    `json:"pageSize"`
+	TotalPages int                    `json:"totalPages"`
+	Summary    EventfulFlightsSummary `json:"summary"`
+	Flights    []EventfulFlight       `json:"flights"`
+	AsOf       string                 `json:"asOf"`
+}

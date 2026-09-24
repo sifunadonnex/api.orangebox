@@ -25,20 +25,20 @@ func reportTestDB(t *testing.T) *sql.DB {
 	statements := []string{
 		`CREATE TABLE Company (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL)`,
 		`CREATE TABLE Aircraft (id TEXT PRIMARY KEY, registration TEXT, serialNumber TEXT NOT NULL, aircraftMake TEXT NOT NULL, modelNumber TEXT, companyId TEXT NOT NULL)`,
-		`CREATE TABLE FlightLeg (id TEXT PRIMARY KEY, status TEXT, flightHours TEXT, aircraftId TEXT NOT NULL, createdAt INTEGER NOT NULL)`,
+		`CREATE TABLE FlightLeg (id TEXT PRIMARY KEY, name TEXT, status TEXT, departure TEXT, destination TEXT, flightHours TEXT, aircraftId TEXT NOT NULL, createdAt INTEGER NOT NULL)`,
 		`CREATE TABLE EventDefinition (id TEXT PRIMARY KEY, eventCode TEXT NOT NULL)`,
 		`CREATE TABLE EventDefinitionVersion (id TEXT PRIMARY KEY, definitionId TEXT NOT NULL, version INTEGER NOT NULL, eventName TEXT, displayName TEXT)`,
 		`CREATE TABLE DetectionRun (id TEXT PRIMARY KEY, flightId TEXT NOT NULL, flightLegId TEXT, status TEXT NOT NULL)`,
 		`CREATE TABLE DetectionRunDefinition (detectionRunId TEXT NOT NULL, definitionId TEXT NOT NULL, status TEXT NOT NULL, isCurrent INTEGER NOT NULL)`,
-		`CREATE TABLE Exceedance (id TEXT PRIMARY KEY, flightId TEXT NOT NULL, flightLegId TEXT, aircraftId TEXT NOT NULL, flightPhase TEXT NOT NULL, eventStatus TEXT NOT NULL, exceedanceLevel TEXT, eventId TEXT, isCurrent INTEGER NOT NULL)`,
+		`CREATE TABLE Exceedance (id TEXT PRIMARY KEY, flightId TEXT NOT NULL, flightLegId TEXT, aircraftId TEXT NOT NULL, flightPhase TEXT NOT NULL, parameterName TEXT, eventStatus TEXT NOT NULL, exceedanceLevel TEXT, eventId TEXT, isCurrent INTEGER NOT NULL)`,
 		`CREATE TABLE ExceedanceLocation (exceedanceId TEXT PRIMARY KEY, latitude REAL NOT NULL, longitude REAL NOT NULL, altitude REAL, matchedTimeMs INTEGER NOT NULL, timeDeltaMs INTEGER NOT NULL, source TEXT NOT NULL, quality TEXT NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL)`,
 		`INSERT INTO Company VALUES ('company-a', 'Alpha Air', 'active'), ('company-b', 'Bravo Air', 'active')`,
 		`INSERT INTO Aircraft VALUES
 			('aircraft-a', '5H-AAA', 'SN-A', 'Boeing', '737', 'company-a'),
 			('aircraft-b', '5H-BBB', 'SN-B', 'Airbus', 'A320', 'company-b')`,
 		`INSERT INTO FlightLeg VALUES
-			('flight-a', 'completed', '2.5', 'aircraft-a', CAST(strftime('%s', '2026-09-01T10:00:00Z') AS INTEGER) * 1000),
-			('flight-b', 'completed_with_warnings', '3.0', 'aircraft-b', CAST(strftime('%s', '2026-09-02T10:00:00Z') AS INTEGER) * 1000)`,
+			('flight-a', 'Alpha 101', 'completed', 'HKJK', 'HTDA', '2.5', 'aircraft-a', CAST(strftime('%s', '2026-09-01T10:00:00Z') AS INTEGER) * 1000),
+			('flight-b', 'Bravo 202', 'completed_with_warnings', 'HTDA', 'HKJK', '3.0', 'aircraft-b', CAST(strftime('%s', '2026-09-02T10:00:00Z') AS INTEGER) * 1000)`,
 		`INSERT INTO EventDefinition VALUES ('definition-1', 'HIGH_SPEED'), ('definition-2', 'UNSTABLE')`,
 		`INSERT INTO EventDefinitionVersion VALUES
 			('version-1', 'definition-1', 1, 'High speed', 'High speed'),
@@ -51,9 +51,9 @@ func reportTestDB(t *testing.T) *sql.DB {
 			('run-a', 'definition-2', 'evaluated', 1),
 			('run-b', 'definition-1', 'evaluated', 1)`,
 		`INSERT INTO Exceedance VALUES
-			('event-a-valid', 'flight-a', 'flight-a', 'aircraft-a', 'CLIMB', 'Valid', 'High', 'version-1', 1),
-			('event-a-pending', 'flight-a', 'flight-a', 'aircraft-a', 'APPROACH', 'Pending', 'Critical', 'version-2', 1),
-			('event-b-valid', 'flight-b', 'flight-b', 'aircraft-b', 'APPROACH', 'Valid', 'Low', 'version-1', 1)`,
+			('event-a-valid', 'flight-a', 'flight-a', 'aircraft-a', 'CLIMB', 'IAS', 'Valid', 'High', 'version-1', 1),
+			('event-a-pending', 'flight-a', 'flight-a', 'aircraft-a', 'APPROACH', 'VSI', 'Pending', 'Critical', 'version-2', 1),
+			('event-b-valid', 'flight-b', 'flight-b', 'aircraft-b', 'APPROACH', 'IAS', 'Valid', 'Low', 'version-1', 1)`,
 		`INSERT INTO ExceedanceLocation VALUES
 			('event-a-valid', -1.2864, 36.8172, 5000, 10000, 0, 'replay_nearest_time', 'exact', 1, 1),
 			('event-b-valid', -6.7924, 39.2083, 8000, 20000, 250, 'replay_nearest_time', 'near', 1, 1)`,
@@ -153,7 +153,7 @@ func TestEventAggregateTenantSeesOnlyValidOwnCompanyData(t *testing.T) {
 func TestEventComparisonUsesIndependentEvaluatedCohorts(t *testing.T) {
 	db := reportTestDB(t)
 	if _, err := db.Exec(`INSERT INTO FlightLeg VALUES
-		('flight-a-later', 'completed', '1.5', 'aircraft-a', CAST(strftime('%s', '2026-09-03T10:00:00Z') AS INTEGER) * 1000);
+		('flight-a-later', 'Alpha 102', 'completed', 'HKJK', 'HTZA', '1.5', 'aircraft-a', CAST(strftime('%s', '2026-09-03T10:00:00Z') AS INTEGER) * 1000);
 		INSERT INTO DetectionRun VALUES ('run-a-later', 'flight-a-later', 'flight-a-later', 'completed');
 		INSERT INTO DetectionRunDefinition VALUES ('run-a-later', 'definition-1', 'evaluated', 1)`); err != nil {
 		t.Fatal(err)
@@ -216,7 +216,7 @@ func TestEventBenchmarkReturnsAnonymizedTenantPercentilesAndNamedOversightPeers(
 	for flightIndex := 2; flightIndex <= minimumBenchmarkEligibleFlights; flightIndex++ {
 		flightID := fmt.Sprintf("focus-flight-%02d", flightIndex)
 		runID := fmt.Sprintf("focus-run-%02d", flightIndex)
-		if _, err := db.Exec(`INSERT INTO FlightLeg VALUES (?, 'completed', '1', 'aircraft-a', CAST(strftime('%s', '2026-09-05T10:00:00Z') AS INTEGER) * 1000)`, flightID); err != nil {
+		if _, err := db.Exec(`INSERT INTO FlightLeg VALUES (?, ?, 'completed', 'HKJK', 'HTDA', '1', 'aircraft-a', CAST(strftime('%s', '2026-09-05T10:00:00Z') AS INTEGER) * 1000)`, flightID, flightID); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.Exec(`INSERT INTO DetectionRun VALUES (?, ?, ?, 'completed')`, runID, flightID, flightID); err != nil {
@@ -240,7 +240,7 @@ func TestEventBenchmarkReturnsAnonymizedTenantPercentilesAndNamedOversightPeers(
 		for flightIndex := 1; flightIndex <= minimumBenchmarkEligibleFlights; flightIndex++ {
 			flightID := fmt.Sprintf("peer-%d-flight-%02d", peerIndex, flightIndex)
 			runID := fmt.Sprintf("peer-%d-run-%02d", peerIndex, flightIndex)
-			if _, err := db.Exec(`INSERT INTO FlightLeg VALUES (?, 'completed', '1', ?, CAST(strftime('%s', '2026-09-05T10:00:00Z') AS INTEGER) * 1000)`, flightID, aircraftID); err != nil {
+			if _, err := db.Exec(`INSERT INTO FlightLeg VALUES (?, ?, 'completed', 'HKJK', 'HTDA', '1', ?, CAST(strftime('%s', '2026-09-05T10:00:00Z') AS INTEGER) * 1000)`, flightID, flightID, aircraftID); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := db.Exec(`INSERT INTO DetectionRun VALUES (?, ?, ?, 'completed')`, runID, flightID, flightID); err != nil {
@@ -251,7 +251,7 @@ func TestEventBenchmarkReturnsAnonymizedTenantPercentilesAndNamedOversightPeers(
 			}
 			if flightIndex <= peerOccurrences {
 				eventID := fmt.Sprintf("peer-%d-event-%02d", peerIndex, flightIndex)
-				if _, err := db.Exec(`INSERT INTO Exceedance VALUES (?, ?, ?, ?, 'CLIMB', 'Valid', 'High', 'version-1', 1)`, eventID, flightID, flightID, aircraftID); err != nil {
+				if _, err := db.Exec(`INSERT INTO Exceedance VALUES (?, ?, ?, ?, 'CLIMB', 'IAS', 'Valid', 'High', 'version-1', 1)`, eventID, flightID, flightID, aircraftID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -317,5 +317,40 @@ func TestEventLocationHonorsScopeAndReportsUnlocatedOccurrences(t *testing.T) {
 	}
 	if adminResponse.Coverage.TotalOccurrences != 3 || adminResponse.Coverage.LocatedOccurrences != 2 || adminResponse.Coverage.UnlocatedOccurrences != 1 || len(adminResponse.Cells) != 2 {
 		t.Fatalf("admin location coverage should include all review states without dropping unlocated data: %+v", adminResponse)
+	}
+}
+
+func TestEventfulFlightsAreScopedSummarizedAndPaginated(t *testing.T) {
+	handler := NewReportHandler(reportTestDB(t))
+	tenantContext, tenantRecorder := reportContext(http.MethodGet, "/api/reports/events/flights", models.RoleUser, "company-a")
+	handler.GetEventfulFlights(tenantContext)
+	if tenantRecorder.Code != http.StatusOK {
+		t.Fatalf("expected tenant 200, got %d: %s", tenantRecorder.Code, tenantRecorder.Body.String())
+	}
+	var tenantResponse models.EventfulFlightsResponse
+	if err := json.Unmarshal(tenantRecorder.Body.Bytes(), &tenantResponse); err != nil {
+		t.Fatal(err)
+	}
+	if tenantResponse.Summary.TotalEventfulFlights != 1 || tenantResponse.Summary.TotalOccurrences != 1 || len(tenantResponse.Flights) != 1 {
+		t.Fatalf("tenant eventful flights leaked company or review-status data: %+v", tenantResponse)
+	}
+	if tenantResponse.Flights[0].CompanyID != "company-a" || tenantResponse.Flights[0].FlightID != "flight-a" {
+		t.Fatalf("unexpected tenant flight: %+v", tenantResponse.Flights[0])
+	}
+
+	adminContext, adminRecorder := reportContext(http.MethodGet, "/api/reports/events/flights?page=1&pageSize=1&order=recent", models.RoleFDA, "")
+	handler.GetEventfulFlights(adminContext)
+	if adminRecorder.Code != http.StatusOK {
+		t.Fatalf("expected FDA 200, got %d: %s", adminRecorder.Code, adminRecorder.Body.String())
+	}
+	var adminResponse models.EventfulFlightsResponse
+	if err := json.Unmarshal(adminRecorder.Body.Bytes(), &adminResponse); err != nil {
+		t.Fatal(err)
+	}
+	if adminResponse.Summary.TotalEventfulFlights != 2 || adminResponse.Summary.TotalOccurrences != 3 || adminResponse.TotalPages != 2 || len(adminResponse.Flights) != 1 {
+		t.Fatalf("unexpected FDA eventful-flight summary or pagination: %+v", adminResponse)
+	}
+	if adminResponse.Flights[0].FlightID != "flight-b" || adminResponse.Flights[0].CompanyName != "Bravo Air" {
+		t.Fatalf("recent FDA result should include identified cross-company flight: %+v", adminResponse.Flights[0])
 	}
 }

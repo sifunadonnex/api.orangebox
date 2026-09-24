@@ -206,6 +206,7 @@ func main() {
 			reports.GET("/events/comparison", middleware.AnyAuthenticatedUser(), reportHandler.GetEventComparison)
 			reports.GET("/events/benchmark", middleware.AnyAuthenticatedUser(), reportHandler.GetEventBenchmark)
 			reports.GET("/events/location", middleware.AnyAuthenticatedUser(), reportHandler.GetEventLocation)
+			reports.GET("/events/flights", middleware.AnyAuthenticatedUser(), reportHandler.GetEventfulFlights)
 		}
 
 		// Notification Routes
