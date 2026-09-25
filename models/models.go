@@ -64,6 +64,12 @@ type CSV struct {
 	PhaseProfile       *string   `json:"phaseProfile,omitempty" db:"phaseProfile"`
 	PhaseTimingSource  *string   `json:"phaseTimingSource,omitempty" db:"phaseTimingSource"`
 	PhaseSummary       *string   `json:"phaseSummary,omitempty" db:"phaseSummary"`
+	OriginalFilename   *string   `json:"originalFilename,omitempty" db:"originalFilename"`
+	ContentHash        *string   `json:"contentHash,omitempty" db:"contentHash"`
+	UploadedBy         *string   `json:"uploadedBy,omitempty" db:"uploadedBy"`
+	UploadSource       *string   `json:"uploadSource,omitempty" db:"uploadSource"`
+	UploaderName       *string   `json:"uploaderName,omitempty"`
+	UploaderEmail      *string   `json:"uploaderEmail,omitempty"`
 	CreatedAt          time.Time `json:"createdAt" db:"createdAt"`
 	UpdatedAt          time.Time `json:"updatedAt" db:"updatedAt"`
 }

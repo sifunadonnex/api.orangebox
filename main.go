@@ -157,7 +157,9 @@ func main() {
 		// CSV/Flight Data Routes
 		csvs := api.Group("/csv")
 		{
-			csvs.POST("", middleware.GatekeeperOrAbove(), csvHandler.UploadCSV)
+			// Any authenticated operator user may submit a recording. UploadCSV is
+			// responsible for enforcing aircraft/company ownership from the token.
+			csvs.POST("", middleware.AnyAuthenticatedUser(), csvHandler.UploadCSV)
 			csvs.GET("", middleware.AnyAuthenticatedUser(), csvHandler.GetCSVs)
 			csvs.POST("/:id/analyze", middleware.GatekeeperOrAbove(), csvHandler.ReanalyzeCSV)
 			csvs.GET("/:id/replay", middleware.AnyAuthenticatedUser(), csvHandler.GetFlightReplay)

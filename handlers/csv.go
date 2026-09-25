@@ -75,6 +75,27 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "File upload failed", "code": 500})
 		return
 	}
+	contentHash, err := hashFile(csvPath)
+	if err != nil {
+		_ = os.Remove(csvPath)
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "CSV file could not be verified", "details": err.Error()})
+		return
+	}
+	var existingRecordingID string
+	err = h.db.QueryRow(`SELECT id FROM Csv WHERE aircraftId = ? AND contentHash = ? LIMIT 1`, req.AircraftID, contentHash).Scan(&existingRecordingID)
+	if err == nil {
+		_ = os.Remove(csvPath)
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "This recording has already been uploaded for the selected aircraft",
+			"code":  "DUPLICATE_RECORDING", "recordingId": existingRecordingID,
+		})
+		return
+	}
+	if err != sql.ErrNoRows {
+		_ = os.Remove(csvPath)
+		respondDatabaseError(c, err)
+		return
+	}
 	segments, segmentationDiagnostics, err := detection.DetectRecordingSegments(csvPath)
 	if err != nil {
 		_ = os.Remove(csvPath)
@@ -104,6 +125,12 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 
 	id := uuid.New().String()
 	now := time.Now()
+	uploadedBy, _ := contextString(c, "userId")
+	role, _ := contextString(c, "userRole")
+	uploadSource := "client_portal"
+	if role == models.RoleAdmin || role == models.RoleFDA {
+		uploadSource = "oversight_portal"
+	}
 	tx, err := h.db.Begin()
 	if err != nil {
 		_ = os.Remove(csvPath)
@@ -111,11 +138,18 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 		return
 	}
 	defer tx.Rollback()
-	query := `INSERT INTO Csv (id, name, file, status, aircraftId, departure, destination, flightHours, pilot, sampleIntervalMs, createdAt, updatedAt)
-		VALUES (?, ?, ?, 'processing', ?, ?, ?, ?, ?, ?, ?, ?)`
-	_, err = tx.Exec(query, id, req.Name, filename, req.AircraftID, req.Departure, req.Destination, req.FlightHours, req.Pilot, req.SampleIntervalMs, now.UnixMilli(), now.UnixMilli())
+	query := `INSERT INTO Csv (id, name, file, status, aircraftId, departure, destination, flightHours, pilot,
+		sampleIntervalMs, originalFilename, contentHash, uploadedBy, uploadSource, createdAt, updatedAt)
+		VALUES (?, ?, ?, 'processing', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	_, err = tx.Exec(query, id, req.Name, filename, req.AircraftID, req.Departure, req.Destination,
+		req.FlightHours, req.Pilot, req.SampleIntervalMs, filepath.Base(file.Filename), contentHash,
+		optionalStringPointer(uploadedBy), uploadSource, now.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		_ = os.Remove(csvPath)
+		if strings.Contains(err.Error(), "Csv.aircraftId, Csv.contentHash") {
+			c.JSON(http.StatusConflict, gin.H{"error": "This recording has already been uploaded for the selected aircraft", "code": "DUPLICATE_RECORDING"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error saving CSV record", "details": err.Error()})
 		return
 	}
@@ -130,6 +164,10 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 		FlightHours:      req.FlightHours,
 		Pilot:            req.Pilot,
 		SampleIntervalMs: &req.SampleIntervalMs,
+		OriginalFilename: stringPointer(filepath.Base(file.Filename)),
+		ContentHash:      stringPointer(contentHash),
+		UploadedBy:       optionalStringPointer(uploadedBy),
+		UploadSource:     stringPointer(uploadSource),
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}

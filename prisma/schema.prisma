@@ -101,11 +101,17 @@ model Csv {
   aircraftId String     // Corrected field name
   sampleIntervalMs Int?
   analysisSummary String?
+  originalFilename String?
+  contentHash String?
+  uploadedBy String?
+  uploadSource String? @default("legacy")
   aircraft  Aircraft @relation(fields: [aircraftId], references: [id])
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   Exceedance Exceedance[]
   detectionRuns DetectionRun[]
+
+  @@unique([aircraftId, contentHash])
 }
 
 model Aircraft {

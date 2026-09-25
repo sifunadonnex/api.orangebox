@@ -259,13 +259,18 @@ func (h *CSVHandler) loadRecordingReview(recordingID string) (recordingReviewRes
 	var createdAt, updatedAt nullableTimestamp
 	err := h.db.QueryRow(`SELECT c.id, c.name, c.file, c.status, c.departure, c.pilot,
 		c.destination, c.flightHours, c.aircraftId, c.sampleIntervalMs,
-		c.analysisSummary, c.createdAt, c.updatedAt, a.companyId
-		FROM Csv c JOIN Aircraft a ON a.id = c.aircraftId WHERE c.id = ?`, recordingID).Scan(
+		c.analysisSummary, c.originalFilename, c.uploadedBy, c.uploadSource,
+		u.fullName, u.email, c.createdAt, c.updatedAt, a.companyId
+		FROM Csv c JOIN Aircraft a ON a.id = c.aircraftId
+		LEFT JOIN User u ON u.id = c.uploadedBy WHERE c.id = ?`, recordingID).Scan(
 		&response.Recording.ID, &response.Recording.Name, &response.Recording.File,
 		&response.Recording.Status, &response.Recording.Departure, &response.Recording.Pilot,
 		&response.Recording.Destination, &response.Recording.FlightHours,
 		&response.Recording.AircraftID, &response.Recording.SampleIntervalMs,
-		&response.Recording.AnalysisSummary, &createdAt, &updatedAt, &companyID,
+		&response.Recording.AnalysisSummary, &response.Recording.OriginalFilename,
+		&response.Recording.UploadedBy, &response.Recording.UploadSource,
+		&response.Recording.UploaderName, &response.Recording.UploaderEmail,
+		&createdAt, &updatedAt, &companyID,
 	)
 	if err != nil {
 		return response, "", err
