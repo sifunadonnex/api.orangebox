@@ -49,19 +49,23 @@ type Aircraft struct {
 
 // CSV represents a CSV file in the system
 type CSV struct {
-	ID               string    `json:"id" db:"id"`
-	Name             string    `json:"name" db:"name"`
-	File             string    `json:"file" db:"file"`
-	Status           *string   `json:"status" db:"status"`
-	Departure        *string   `json:"departure" db:"departure"`
-	Pilot            *string   `json:"pilot" db:"pilot"`
-	Destination      *string   `json:"destination" db:"destination"`
-	FlightHours      *string   `json:"flightHours" db:"flightHours"`
-	AircraftID       string    `json:"aircraftId" db:"aircraftId"`
-	SampleIntervalMs *int64    `json:"sampleIntervalMs,omitempty" db:"sampleIntervalMs"`
-	AnalysisSummary  *string   `json:"analysisSummary,omitempty" db:"analysisSummary"`
-	CreatedAt        time.Time `json:"createdAt" db:"createdAt"`
-	UpdatedAt        time.Time `json:"updatedAt" db:"updatedAt"`
+	ID                 string    `json:"id" db:"id"`
+	Name               string    `json:"name" db:"name"`
+	File               string    `json:"file" db:"file"`
+	Status             *string   `json:"status" db:"status"`
+	Departure          *string   `json:"departure" db:"departure"`
+	Pilot              *string   `json:"pilot" db:"pilot"`
+	Destination        *string   `json:"destination" db:"destination"`
+	FlightHours        *string   `json:"flightHours" db:"flightHours"`
+	AircraftID         string    `json:"aircraftId" db:"aircraftId"`
+	SampleIntervalMs   *int64    `json:"sampleIntervalMs,omitempty" db:"sampleIntervalMs"`
+	AnalysisSummary    *string   `json:"analysisSummary,omitempty" db:"analysisSummary"`
+	PhaseEngineVersion *string   `json:"phaseEngineVersion,omitempty" db:"phaseEngineVersion"`
+	PhaseProfile       *string   `json:"phaseProfile,omitempty" db:"phaseProfile"`
+	PhaseTimingSource  *string   `json:"phaseTimingSource,omitempty" db:"phaseTimingSource"`
+	PhaseSummary       *string   `json:"phaseSummary,omitempty" db:"phaseSummary"`
+	CreatedAt          time.Time `json:"createdAt" db:"createdAt"`
+	UpdatedAt          time.Time `json:"updatedAt" db:"updatedAt"`
 }
 
 // FlightLeg represents one logical flight contained in an uploaded CSV

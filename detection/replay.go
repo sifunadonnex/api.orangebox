@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type ReplayOptions struct {
@@ -13,6 +14,7 @@ type ReplayOptions struct {
 	StartRow         int
 	EndRow           int
 	RebaseTime       bool
+	PhaseRuns        []PhaseRun
 }
 
 type ReplayCapabilities struct {
@@ -45,22 +47,24 @@ type ReplayMeasurement struct {
 }
 
 type ReplayPoint struct {
-	TimeMs         int64    `json:"timeMs"`
-	GMTTimeMs      *int64   `json:"gmtTimeMs,omitempty"`
-	Latitude       float64  `json:"latitude"`
-	Longitude      float64  `json:"longitude"`
-	Altitude       *float64 `json:"altitude,omitempty"`
-	AltitudeMeters *float64 `json:"altitudeMeters,omitempty"`
-	GroundSpeed    *float64 `json:"groundSpeed,omitempty"`
-	Airspeed       *float64 `json:"airspeed,omitempty"`
-	Heading        *float64 `json:"heading,omitempty"`
-	VerticalSpeed  *float64 `json:"verticalSpeed,omitempty"`
-	Pitch          *float64 `json:"pitch,omitempty"`
-	Roll           *float64 `json:"roll,omitempty"`
-	Phase          string   `json:"phase,omitempty"`
-	Airborne       *bool    `json:"airborne,omitempty"`
-	Segment        int      `json:"segment"`
-	SourceRow      int      `json:"sourceRow"`
+	TimeMs           int64    `json:"timeMs"`
+	GMTTimeMs        *int64   `json:"gmtTimeMs,omitempty"`
+	RecordedTimeMs   *int64   `json:"recordedTimeMs,omitempty"`
+	RecordedTimeType string   `json:"recordedTimeType,omitempty"`
+	Latitude         float64  `json:"latitude"`
+	Longitude        float64  `json:"longitude"`
+	Altitude         *float64 `json:"altitude,omitempty"`
+	AltitudeMeters   *float64 `json:"altitudeMeters,omitempty"`
+	GroundSpeed      *float64 `json:"groundSpeed,omitempty"`
+	Airspeed         *float64 `json:"airspeed,omitempty"`
+	Heading          *float64 `json:"heading,omitempty"`
+	VerticalSpeed    *float64 `json:"verticalSpeed,omitempty"`
+	Pitch            *float64 `json:"pitch,omitempty"`
+	Roll             *float64 `json:"roll,omitempty"`
+	Phase            string   `json:"phase,omitempty"`
+	Airborne         *bool    `json:"airborne,omitempty"`
+	Segment          int      `json:"segment"`
+	SourceRow        int      `json:"sourceRow"`
 }
 
 type ReplayResult struct {
@@ -185,6 +189,10 @@ func BuildReplay(path string, options ReplayOptions) (ReplayResult, error) {
 	if options.RebaseTime {
 		rebaseFrameTimes(frames)
 	}
+	applyPhaseRunsToFrames(frames, options.PhaseRuns)
+	if len(options.PhaseRuns) > 0 {
+		result.Mappings["phase"] = "detected:" + PhaseEngineVersion
+	}
 	result.TimingSource = timingSource
 	result.Capabilities.Timing = true
 
@@ -205,8 +213,11 @@ func BuildReplay(path string, options ReplayOptions) (ReplayResult, error) {
 			continue
 		}
 		altitude, altitudeMeters := normalizedAltitude(current.values, keys["altitude"], result.Measurements["altitude"])
+		recordedTimeMs, recordedTimeType := recordedClockMillis(current.values)
 		point := ReplayPoint{
-			TimeMs: current.timeMs, GMTTimeMs: recordedGMTMillis(current.values), Latitude: latitude, Longitude: longitude,
+			TimeMs: current.timeMs, GMTTimeMs: recordedGMTMillis(current.values),
+			RecordedTimeMs: recordedTimeMs, RecordedTimeType: recordedTimeType,
+			Latitude: latitude, Longitude: longitude,
 			Altitude: altitude, AltitudeMeters: altitudeMeters,
 			GroundSpeed:   normalizedSpeed(current.values, keys["groundSpeed"], result.Measurements["groundSpeed"]),
 			Airspeed:      normalizedSpeed(current.values, keys["airspeed"], result.Measurements["airspeed"]),
@@ -455,6 +466,35 @@ func recordedGMTMillis(values map[string]string) *int64 {
 
 	milliseconds := int64(math.Round((float64(hour*3600+minute*60) + second) * 1000))
 	return &milliseconds
+}
+
+func recordedClockMillis(values map[string]string) (*int64, string) {
+	if value := recordedGMTMillis(values); value != nil {
+		return value, "GMT"
+	}
+	if value := parseRecordedClock(firstValue(values, "LCLTIME", "LOCALTIME")); value != nil {
+		return value, "Local"
+	}
+	if value := parseRecordedClock(firstValue(values, "UTCTIME")); value != nil {
+		return value, "UTC"
+	}
+	return nil, ""
+}
+
+func parseRecordedClock(value string) *int64 {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	for _, layout := range []string{"15:04:05.999999999", "15:04:05", "15:04"} {
+		parsed, err := time.Parse(layout, value)
+		if err != nil {
+			continue
+		}
+		milliseconds := int64(parsed.Hour()*3600000+parsed.Minute()*60000+parsed.Second()*1000) + int64(parsed.Nanosecond()/int(time.Millisecond))
+		return &milliseconds
+	}
+	return nil
 }
 
 func normalizedSpeed(values map[string]string, key string, measurement ReplayMeasurement) *float64 {

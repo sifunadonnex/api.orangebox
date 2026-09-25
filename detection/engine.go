@@ -34,6 +34,7 @@ type Options struct {
 	StartRow          int
 	EndRow            int
 	RebaseTime        bool
+	PhaseRuns         []PhaseRun
 }
 
 type Diagnostic struct {
@@ -159,6 +160,7 @@ func AnalyzeFile(path string, definitions []Definition, options Options) (Result
 	if options.RebaseTime {
 		rebaseFrameTimes(frames)
 	}
+	applyPhaseRunsToFrames(frames, options.PhaseRuns)
 	for _, item := range timingDiagnostics {
 		diagnostics.add(item.Code, item.Severity, item.Message, item.RuleVersionID)
 	}
@@ -215,9 +217,25 @@ func readCSV(path string) (map[string]string, []rawRow, []Diagnostic, error) {
 	reader := csv.NewReader(file)
 	reader.FieldsPerRecord = -1
 	reader.ReuseRecord = false
-	headerRecord, err := reader.Read()
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("read CSV header: %w", err)
+	reader.LazyQuotes = true
+	headerLine := 0
+	var headerRecord []string
+	for line := 1; line <= 50; line++ {
+		record, readErr := reader.Read()
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return nil, nil, nil, fmt.Errorf("inspect CSV row %d: %w", line, readErr)
+		}
+		if looksLikeCSVHeader(record) {
+			headerLine = line
+			headerRecord = append([]string(nil), record...)
+			break
+		}
+	}
+	if headerLine == 0 {
+		return nil, nil, nil, errors.New("CSV header was not found in the first 50 rows")
 	}
 	headers := make(map[string]string, len(headerRecord))
 	indices := make(map[string]int, len(headerRecord))
@@ -242,7 +260,7 @@ func readCSV(path string) (map[string]string, []rawRow, []Diagnostic, error) {
 	}
 
 	rows := make([]rawRow, 0, 1024)
-	rowNumber := 1
+	rowNumber := headerLine
 	for {
 		record, readErr := reader.Read()
 		if readErr == io.EOF {
@@ -273,6 +291,51 @@ func readCSV(path string) (map[string]string, []rawRow, []Diagnostic, error) {
 		return nil, nil, nil, errors.New("CSV contains no data rows")
 	}
 	return headers, rows, diagnostics, nil
+}
+
+func looksLikeCSVHeader(record []string) bool {
+	keys := make(map[string]bool, len(record))
+	nonEmpty := 0
+	for index, raw := range record {
+		if index == 0 {
+			raw = strings.TrimPrefix(raw, "\ufeff")
+		}
+		key := canonical(raw)
+		if key != "" {
+			keys[key] = true
+			nonEmpty++
+		}
+	}
+	if nonEmpty < 2 {
+		return false
+	}
+	for _, key := range []string{
+		"SAMPLE", "FRAME", "TIME", "UTCTIME", "LCLTIME", "TIMEELAPSED", "ELAPSEDTIME", "ELAPSEDSECONDS", "TIMESEC",
+		"LATITUDE", "LATITUDEDEG", "GPSLATITUDE", "LONGITUDE", "LONGITUDEDEG", "GPSLONGITUDE",
+		"IAS", "AIRSPEED", "ALTMSL", "ALTITUDE", "ALTITUDEFT", "ALTITUDEM", "PHASE", "FLIGHTPHASE", "FLIGHTSTAGE",
+	} {
+		if keys[key] {
+			return true
+		}
+	}
+	return false
+}
+
+func applyPhaseRunsToFrames(frames []frame, runs []PhaseRun) {
+	if len(frames) == 0 || len(runs) == 0 {
+		return
+	}
+	ordered := append([]PhaseRun(nil), runs...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].StartRow < ordered[j].StartRow })
+	runIndex := 0
+	for index := range frames {
+		for runIndex < len(ordered) && frames[index].row > ordered[runIndex].EndRow {
+			runIndex++
+		}
+		if runIndex < len(ordered) && frames[index].row >= ordered[runIndex].StartRow && frames[index].row <= ordered[runIndex].EndRow {
+			frames[index].phase = strings.ToUpper(strings.TrimSpace(ordered[runIndex].Phase))
+		}
+	}
 }
 
 func looksLikeUnitsRow(values map[string]string) bool {

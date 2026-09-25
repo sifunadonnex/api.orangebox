@@ -120,6 +120,40 @@ func TestAnalyzeFileUsesCombinedLocalDateAndTime(t *testing.T) {
 	}
 }
 
+func TestAnalyzeFileUsesDetectedPhaseRunsWhenCSVHasNoPhaseColumn(t *testing.T) {
+	path := writeTestCSV(t, "Sample,AIRSPEED\n0,90\n1,110\n2,120\n3,90\n")
+	rule := numericRule("AIRSPEED", ">", 100)
+	rule.Applicability.Phases = []string{"TAKEOFF"}
+	rule.Temporal.MinimumDurationMs = 1000
+
+	result, err := AnalyzeFile(path, []Definition{testDefinition(rule)}, Options{
+		SampleIntervalMs: 1000,
+		PhaseRuns:        []PhaseRun{{Phase: "TAKEOFF", StartRow: 2, EndRow: 5, DurationMs: 4000}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Occurrences) != 1 || result.Occurrences[0].Phase != "TAKEOFF" {
+		t.Fatalf("detected phases were not supplied to rule evaluation: %#v", result)
+	}
+	for _, diagnostic := range result.Diagnostics {
+		if diagnostic.Code == "PHASE_MISSING" {
+			t.Fatalf("detected phases should prevent missing-phase diagnostics: %#v", result.Diagnostics)
+		}
+	}
+}
+
+func TestAnalyzeFileFindsHeaderAfterGarminMetadata(t *testing.T) {
+	path := writeTestCSV(t, "Aircraft,5Y-SLQ\nDevice,Garmin G1000\nSample,Phase,AIRSPEED\n0,TAKEOFF,100\n1,TAKEOFF,120\n")
+	result, err := AnalyzeFile(path, nil, Options{SampleIntervalMs: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RowCount != 2 {
+		t.Fatalf("row count = %d, want 2", result.RowCount)
+	}
+}
+
 func numericRule(parameter, operator string, threshold float64) models.EventRule {
 	return models.EventRule{
 		SchemaVersion: 1,

@@ -54,12 +54,18 @@ func (h *CSVHandler) GetFlightReplay(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
+	phaseRuns, err := h.loadFlightPhaseRuns(flight.RecordingID, flight.StartRow, valueOrZeroInt(flight.EndRow))
+	if err != nil {
+		respondDatabaseError(c, err)
+		return
+	}
 	replay, err := detection.BuildReplay(path, detection.ReplayOptions{
 		SampleIntervalMs: valueOrZeroInt64(flight.SampleIntervalMs),
 		MaxPoints:        10000,
 		StartRow:         flight.StartRow,
 		EndRow:           valueOrZeroInt(flight.EndRow),
 		RebaseTime:       true,
+		PhaseRuns:        phaseRuns,
 	})
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})

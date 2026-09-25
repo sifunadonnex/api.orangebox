@@ -95,6 +95,10 @@ func (h *CSVHandler) analyzeFlight(path, filename string, flight *models.FlightL
 			return prior
 		}
 	}
+	phaseRuns, err := h.loadFlightPhaseRuns(flight.RecordingID, flight.StartRow, valueOrZeroInt(flight.EndRow))
+	if err != nil {
+		return h.failFlightAnalysis(flight.ID, "", response, fmt.Errorf("load detected flight phases: %w", err), options.UpdateFlightOnFail)
+	}
 
 	runID := uuid.New().String()
 	response.RunID = runID
@@ -112,6 +116,7 @@ func (h *CSVHandler) analyzeFlight(path, filename string, flight *models.FlightL
 	result, err := detection.AnalyzeFile(path, definitions, detection.Options{
 		SampleIntervalMs: response.SampleIntervalMs, MaxEvidencePoints: 500,
 		StartRow: flight.StartRow, EndRow: valueOrZeroInt(flight.EndRow), RebaseTime: true,
+		PhaseRuns: phaseRuns,
 	})
 	if err != nil {
 		return h.failFlightAnalysis(flight.ID, runID, response, err, options.UpdateFlightOnFail)
@@ -140,12 +145,14 @@ func (h *CSVHandler) matchOccurrenceLocations(path string, flight *models.Flight
 		return locations
 	}
 
+	phaseRuns, _ := h.loadFlightPhaseRuns(flight.RecordingID, flight.StartRow, valueOrZeroInt(flight.EndRow))
 	replay, err := detection.BuildReplay(path, detection.ReplayOptions{
 		SampleIntervalMs: response.SampleIntervalMs,
 		MaxPoints:        response.RowCount + 1,
 		StartRow:         flight.StartRow,
 		EndRow:           valueOrZeroInt(flight.EndRow),
 		RebaseTime:       true,
+		PhaseRuns:        phaseRuns,
 	})
 	if err != nil || !replay.Supported {
 		return locations

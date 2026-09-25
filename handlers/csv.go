@@ -81,6 +81,26 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "CSV recording could not be segmented", "details": err.Error()})
 		return
 	}
+	phaseResult, phaseErr := detectUploadPhases(csvPath, aircraft, req.SampleIntervalMs)
+	phaseResponse := phaseDetectionResponse{Status: "failed"}
+	if phaseErr != nil {
+		phaseResponse.Error = phaseErr.Error()
+		segmentationDiagnostics = append(segmentationDiagnostics, detection.Diagnostic{
+			Code: "PHASE_DETECTION_FAILED", Severity: "warning",
+			Message: "Flight phases could not be detected; recording boundaries and any source phase column will be used: " + phaseErr.Error(), Count: 1,
+		})
+	} else {
+		phaseResponse = phaseDetectionResponse{Status: "completed", Result: &phaseResult}
+		segmentationDiagnostics = append(segmentationDiagnostics, phaseResult.Diagnostics...)
+		if detectedSegments, segmentErr := phaseSegments(csvPath, phaseResult); segmentErr == nil {
+			segments = detectedSegments
+		} else {
+			segmentationDiagnostics = append(segmentationDiagnostics, detection.Diagnostic{
+				Code: "PHASE_BOUNDARIES_FALLBACK", Severity: "warning",
+				Message: "Detected phases were retained, but conservative recording boundaries were used: " + segmentErr.Error(), Count: 1,
+			})
+		}
+	}
 
 	id := uuid.New().String()
 	now := time.Now()
@@ -112,6 +132,14 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 		SampleIntervalMs: &req.SampleIntervalMs,
 		CreatedAt:        now,
 		UpdatedAt:        now,
+	}
+	if phaseErr == nil {
+		recording.PhaseEngineVersion = stringPointer(phaseResult.EngineVersion)
+		recording.PhaseProfile = stringPointer(phaseResult.Profile.Code)
+		recording.PhaseTimingSource = stringPointer(phaseResult.TimingSource)
+		if phaseJSON, marshalErr := json.Marshal(phaseResult); marshalErr == nil {
+			recording.PhaseSummary = stringPointer(string(phaseJSON))
+		}
 	}
 	flights := make([]models.FlightLeg, 0, len(segments))
 	for index, segment := range segments {
@@ -153,6 +181,13 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 		}
 		flights = append(flights, flight)
 	}
+	if phaseErr == nil {
+		if err = persistPhaseDetection(tx, id, phaseResult, now); err != nil {
+			_ = os.Remove(csvPath)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error saving detected flight phases", "details": err.Error()})
+			return
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		_ = os.Remove(csvPath)
 		respondDatabaseError(c, err)
@@ -175,6 +210,7 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{
 		"success": true, "data": flights[0], "recording": recording,
 		"flights": flights, "flightCount": len(flights), "analyses": analyses, "analysis": aggregate,
+		"phaseDetection": phaseResponse,
 	})
 }
 
@@ -312,7 +348,9 @@ func (h *CSVHandler) GetCSVs(c *gin.Context) {
 	c.JSON(http.StatusOK, flights)
 }
 
-// DownloadCSV serves only the source rows belonging to the requested flight.
+// DownloadCSV serves the source rows belonging to the requested flight as an
+// analysis view. The immutable stored file is never rewritten; a virtual
+// Detected Phase column is appended from the persisted row-range timeline.
 func (h *CSVHandler) DownloadCSV(c *gin.Context) {
 	flight, aircraft, err := h.getStoredFlight(c.Param("id"))
 	if err == sql.ErrNoRows {
@@ -332,7 +370,12 @@ func (h *CSVHandler) DownloadCSV(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Stored recording not found"})
 		return
 	}
-	if err = streamCSVRange(c, filePath, flight.Name, flight.StartRow, valueOrZeroInt(flight.EndRow)); err != nil {
+	phaseRuns, err := h.loadFlightPhaseRuns(flight.RecordingID, flight.StartRow, valueOrZeroInt(flight.EndRow))
+	if err != nil {
+		respondDatabaseError(c, err)
+		return
+	}
+	if err = streamCSVRange(c, filePath, flight.Name, flight.StartRow, valueOrZeroInt(flight.EndRow), phaseRuns); err != nil {
 		log.Printf("Error streaming flight CSV: %v", err)
 	}
 }
@@ -605,7 +648,7 @@ func aggregateFlightAnalyses(analyses []flightAnalysisResponse, segmentationDiag
 	return aggregate
 }
 
-func streamCSVRange(c *gin.Context, path, flightName string, startRow, endRow int) error {
+func streamCSVRange(c *gin.Context, path, flightName string, startRow, endRow int, phaseRuns []detection.PhaseRun) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return err
@@ -614,10 +657,27 @@ func streamCSVRange(c *gin.Context, path, flightName string, startRow, endRow in
 
 	reader := csv.NewReader(file)
 	reader.FieldsPerRecord = -1
-	header, err := reader.Read()
-	if err != nil {
-		return err
+	reader.LazyQuotes = true
+	headerLine := 0
+	var header []string
+	for line := 1; line <= 50; line++ {
+		record, readErr := reader.Read()
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return readErr
+		}
+		if isFlightCSVHeader(record) {
+			headerLine = line
+			header = append([]string(nil), record...)
+			break
+		}
 	}
+	if headerLine == 0 {
+		return fmt.Errorf("CSV header was not found in the first 50 rows")
+	}
+	header = append(header, "Detected Phase")
 	safeName := strings.NewReplacer("\"", "", "\r", "", "\n", "").Replace(strings.TrimSpace(flightName))
 	if safeName == "" {
 		safeName = "flight"
@@ -628,7 +688,8 @@ func streamCSVRange(c *gin.Context, path, flightName string, startRow, endRow in
 	if err = writer.Write(header); err != nil {
 		return err
 	}
-	recordNumber := 1
+	recordNumber := headerLine
+	runIndex := 0
 	for {
 		record, readErr := reader.Read()
 		if readErr == io.EOF {
@@ -644,10 +705,45 @@ func streamCSVRange(c *gin.Context, path, flightName string, startRow, endRow in
 		if endRow > 0 && recordNumber > endRow {
 			break
 		}
+		for runIndex < len(phaseRuns) && recordNumber > phaseRuns[runIndex].EndRow {
+			runIndex++
+		}
+		phase := ""
+		if runIndex < len(phaseRuns) && recordNumber >= phaseRuns[runIndex].StartRow && recordNumber <= phaseRuns[runIndex].EndRow {
+			phase = phaseRuns[runIndex].Phase
+		}
+		record = append(record, phase)
 		if err = writer.Write(record); err != nil {
 			return err
 		}
 	}
 	writer.Flush()
 	return writer.Error()
+}
+
+func isFlightCSVHeader(record []string) bool {
+	known := map[string]bool{
+		"SAMPLE": true, "FRAME": true, "TIME": true, "UTCTIME": true, "LCLTIME": true,
+		"TIMEELAPSED": true, "ELAPSEDSECONDS": true, "LATITUDE": true, "LONGITUDE": true,
+		"IAS": true, "AIRSPEED": true, "ALTMSL": true, "ALTIND": true, "ALTITUDE": true,
+	}
+	nonEmpty := 0
+	hasKnown := false
+	for _, value := range record {
+		key := strings.Map(func(character rune) rune {
+			if character >= 'a' && character <= 'z' {
+				return character - ('a' - 'A')
+			}
+			if (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') {
+				return character
+			}
+			return -1
+		}, strings.TrimSpace(strings.TrimPrefix(value, "\ufeff")))
+		if key == "" {
+			continue
+		}
+		nonEmpty++
+		hasKnown = hasKnown || known[key]
+	}
+	return nonEmpty >= 2 && hasKnown
 }

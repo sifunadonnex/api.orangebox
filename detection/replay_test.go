@@ -34,6 +34,9 @@ func TestBuildReplayResolvesAliasesAndOptionalCapabilities(t *testing.T) {
 	if result.Measurements["altitude"].Unit != "ft" || result.Measurements["altitude"].Reference != "MSL" {
 		t.Fatalf("unexpected altitude metadata: %#v", result.Measurements["altitude"])
 	}
+	if result.Points[0].RecordedTimeMs == nil || *result.Points[0].RecordedTimeMs != 23896000 || result.Points[0].RecordedTimeType != "Local" {
+		t.Fatalf("expected recorded local time to be preserved: %#v", result.Points[0])
+	}
 }
 
 func TestBuildReplayGracefullyRejectsMissingPosition(t *testing.T) {
@@ -71,6 +74,9 @@ func TestBuildReplayPreservesRecordedGMTAlongsideElapsedClock(t *testing.T) {
 	}
 	if result.Points[0].GMTTimeMs == nil || *result.Points[0].GMTTimeMs != 23896250 {
 		t.Fatalf("expected recorded GMT time to be preserved: %#v", result.Points[0])
+	}
+	if result.Points[0].RecordedTimeMs == nil || *result.Points[0].RecordedTimeMs != 23896250 || result.Points[0].RecordedTimeType != "GMT" {
+		t.Fatalf("expected GMT to be the preferred recorded clock: %#v", result.Points[0])
 	}
 }
 
