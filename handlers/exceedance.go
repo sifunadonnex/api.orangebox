@@ -78,7 +78,7 @@ func (h *ExceedanceHandler) GetExceedances(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	var exceedances []interface{}
+	exceedances := make([]interface{}, 0)
 	for rows.Next() {
 		var exceedance models.Exceedance
 		var eventLog models.EventLog
@@ -403,7 +403,7 @@ func (h *ExceedanceHandler) GetExceedancesByFlightID(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	var exceedances []models.Exceedance
+	exceedances := make([]models.Exceedance, 0)
 	for rows.Next() {
 		var exceedance models.Exceedance
 		var createdAtStr, updatedAtStr sql.NullString

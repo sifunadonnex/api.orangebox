@@ -108,7 +108,8 @@ func (h *NotificationHandler) GetUserNotifications(c *gin.Context) {
 		return
 	}
 
-	query := `SELECT n.id, n.userId, n.exceedanceId, n.message, n.level, n.isRead, n.createdAt, n.updatedAt
+	query := `SELECT n.id, n.userId, n.exceedanceId, n.message, n.level, n.isRead, n.createdAt, n.updatedAt,
+			  COALESCE(e.flightLegId, e.flightId, ''), COALESCE(e.eventStatus, '')
 			  FROM Notification n
 			  JOIN Exceedance e ON e.id = n.exceedanceId AND e.isCurrent = 1
 			  WHERE n.userId = ?
@@ -121,15 +122,21 @@ func (h *NotificationHandler) GetUserNotifications(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	var notifications []models.Notification
+	type notificationResponse struct {
+		models.Notification
+		FlightID    string `json:"flightId"`
+		EventStatus string `json:"eventStatus"`
+	}
+	notifications := make([]notificationResponse, 0)
 	for rows.Next() {
 		var notification models.Notification
+		var flightID, eventStatus string
 		var createdAt, updatedAt nullableTimestamp
 
 		err := rows.Scan(&notification.ID, &notification.UserID,
 			&notification.ExceedanceID, &notification.Message,
 			&notification.Level, &notification.IsRead,
-			&createdAt, &updatedAt)
+			&createdAt, &updatedAt, &flightID, &eventStatus)
 
 		if err != nil {
 			continue
@@ -141,7 +148,11 @@ func (h *NotificationHandler) GetUserNotifications(c *gin.Context) {
 		if updatedAt.Valid {
 			notification.UpdatedAt = updatedAt.Time
 		}
-		notifications = append(notifications, notification)
+		notifications = append(notifications, notificationResponse{
+			Notification: notification,
+			FlightID:     flightID,
+			EventStatus:  eventStatus,
+		})
 	}
 
 	c.JSON(http.StatusOK, notifications)

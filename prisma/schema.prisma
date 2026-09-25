@@ -21,6 +21,8 @@ model Company {
   status            String      @default("active") // active, suspended, expired
   subscriptionId    String?
   subscription      Subscription? @relation(fields: [subscriptionId], references: [id])
+  subscriptionStartedAt DateTime?
+  subscriptionEndsAt    DateTime?
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
   users             User[]
@@ -33,6 +35,7 @@ model Subscription {
   id                    String      @id @default(cuid())
   planName              String      // Basic, Standard, Premium, Enterprise
   planType              String      // monthly, yearly
+  trialDays             Int         @default(0)
   maxUsers              Int         @default(5)
   maxAircraft           Int         @default(2)
   maxFlightsPerMonth    Int         @default(100)

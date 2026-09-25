@@ -29,13 +29,26 @@ func (h *CompanyHandler) CreateCompany(c *gin.Context) {
 	// Generate UUID
 	id := uuid.New().String()
 	now := time.Now()
+	var subscriptionStartedAt, subscriptionEndsAt *time.Time
+	if req.SubscriptionID != nil && *req.SubscriptionID != "" {
+		var err error
+		subscriptionStartedAt, subscriptionEndsAt, err = h.subscriptionWindow(*req.SubscriptionID, now)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Selected subscription plan does not exist"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve subscription period", "details": err.Error()})
+			return
+		}
+	}
 
 	query := `
-		INSERT INTO Company (id, name, email, phone, address, country, logo, status, subscriptionId, createdAt, updatedAt)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
+		INSERT INTO Company (id, name, email, phone, address, country, logo, status, subscriptionId, subscriptionStartedAt, subscriptionEndsAt, createdAt, updatedAt)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
 	`
 
-	_, err := h.db.Exec(query, id, req.Name, req.Email, req.Phone, req.Address, req.Country, req.Logo, req.SubscriptionID, now, now)
+	_, err := h.db.Exec(query, id, req.Name, req.Email, req.Phone, req.Address, req.Country, req.Logo, req.SubscriptionID, subscriptionStartedAt, subscriptionEndsAt, now, now)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create company", "details": err.Error()})
 		return
@@ -55,8 +68,8 @@ func (h *CompanyHandler) CreateCompany(c *gin.Context) {
 func (h *CompanyHandler) GetCompanies(c *gin.Context) {
 	query := `
 		SELECT 
-			c.id, c.name, c.email, c.phone, c.address, c.country, c.logo, c.status, c.subscriptionId, c.createdAt, c.updatedAt,
-			s.id, s.planName, s.planType, s.maxUsers, s.maxAircraft, s.maxFlightsPerMonth, s.maxStorageGB,
+			c.id, c.name, c.email, c.phone, c.address, c.country, c.logo, c.status, c.subscriptionId, c.subscriptionStartedAt, c.subscriptionEndsAt, c.createdAt, c.updatedAt,
+			s.id, s.planName, s.planType, s.trialDays, s.maxUsers, s.maxAircraft, s.maxFlightsPerMonth, s.maxStorageGB,
 			s.price, s.currency, s.startDate, s.endDate, s.isActive, s.autoRenew,
 			s.lastPaymentDate, s.nextPaymentDate, s.alertSentAt, s.createdAt, s.updatedAt
 		FROM Company c
@@ -76,7 +89,7 @@ func (h *CompanyHandler) GetCompanies(c *gin.Context) {
 		var company models.Company
 		var subscription models.Subscription
 		var subID, subPlanName, subPlanType, subCurrency sql.NullString
-		var subMaxUsers, subMaxAircraft, subMaxFlightsPerMonth, subMaxStorageGB sql.NullInt64
+		var subTrialDays, subMaxUsers, subMaxAircraft, subMaxFlightsPerMonth, subMaxStorageGB sql.NullInt64
 		var subPrice sql.NullFloat64
 		var subStartDate, subEndDate, subLastPaymentDate, subNextPaymentDate, subAlertSentAt, subCreatedAt, subUpdatedAt sql.NullTime
 		var subIsActive, subAutoRenew sql.NullBool
@@ -84,8 +97,9 @@ func (h *CompanyHandler) GetCompanies(c *gin.Context) {
 		err := rows.Scan(
 			&company.ID, &company.Name, &company.Email, &company.Phone, &company.Address,
 			&company.Country, &company.Logo, &company.Status, &company.SubscriptionID,
+			&company.SubscriptionStartedAt, &company.SubscriptionEndsAt,
 			&company.CreatedAt, &company.UpdatedAt,
-			&subID, &subPlanName, &subPlanType, &subMaxUsers, &subMaxAircraft,
+			&subID, &subPlanName, &subPlanType, &subTrialDays, &subMaxUsers, &subMaxAircraft,
 			&subMaxFlightsPerMonth, &subMaxStorageGB, &subPrice, &subCurrency,
 			&subStartDate, &subEndDate, &subIsActive, &subAutoRenew,
 			&subLastPaymentDate, &subNextPaymentDate, &subAlertSentAt,
@@ -106,19 +120,21 @@ func (h *CompanyHandler) GetCompanies(c *gin.Context) {
 
 		// Build response
 		companyData := gin.H{
-			"id":             company.ID,
-			"name":           company.Name,
-			"email":          company.Email,
-			"phone":          company.Phone,
-			"address":        company.Address,
-			"country":        company.Country,
-			"logo":           company.Logo,
-			"status":         company.Status,
-			"subscriptionId": company.SubscriptionID,
-			"createdAt":      company.CreatedAt,
-			"updatedAt":      company.UpdatedAt,
-			"userCount":      userCount,
-			"aircraftCount":  aircraftCount,
+			"id":                    company.ID,
+			"name":                  company.Name,
+			"email":                 company.Email,
+			"phone":                 company.Phone,
+			"address":               company.Address,
+			"country":               company.Country,
+			"logo":                  company.Logo,
+			"status":                company.Status,
+			"subscriptionId":        company.SubscriptionID,
+			"subscriptionStartedAt": company.SubscriptionStartedAt,
+			"subscriptionEndsAt":    company.SubscriptionEndsAt,
+			"createdAt":             company.CreatedAt,
+			"updatedAt":             company.UpdatedAt,
+			"userCount":             userCount,
+			"aircraftCount":         aircraftCount,
 		}
 
 		// Add subscription if exists
@@ -126,6 +142,7 @@ func (h *CompanyHandler) GetCompanies(c *gin.Context) {
 			subscription.ID = subID.String
 			subscription.PlanName = subPlanName.String
 			subscription.PlanType = subPlanType.String
+			subscription.TrialDays = int(subTrialDays.Int64)
 			subscription.MaxUsers = int(subMaxUsers.Int64)
 			subscription.MaxAircraft = int(subMaxAircraft.Int64)
 			subscription.MaxFlightsPerMonth = int(subMaxFlightsPerMonth.Int64)
@@ -148,6 +165,12 @@ func (h *CompanyHandler) GetCompanies(c *gin.Context) {
 			}
 			subscription.CreatedAt = subCreatedAt.Time
 			subscription.UpdatedAt = subUpdatedAt.Time
+			if company.SubscriptionStartedAt != nil {
+				subscription.StartDate = *company.SubscriptionStartedAt
+			}
+			if company.SubscriptionEndsAt != nil {
+				subscription.EndDate = *company.SubscriptionEndsAt
+			}
 
 			companyData["subscription"] = subscription
 		} else {
@@ -189,6 +212,12 @@ func (h *CompanyHandler) GetCompanyByID(c *gin.Context) {
 	if company.SubscriptionID != nil {
 		subscription, err := h.getSubscriptionByID(*company.SubscriptionID)
 		if err == nil {
+			if company.SubscriptionStartedAt != nil {
+				subscription.StartDate = *company.SubscriptionStartedAt
+			}
+			if company.SubscriptionEndsAt != nil {
+				subscription.EndDate = *company.SubscriptionEndsAt
+			}
 			company.Subscription = subscription
 		}
 	}
@@ -255,8 +284,31 @@ func (h *CompanyHandler) UpdateCompany(c *gin.Context) {
 		args = append(args, *req.Status)
 	}
 	if req.SubscriptionID != nil {
+		var currentSubscriptionID sql.NullString
+		if err := h.db.QueryRow("SELECT subscriptionId FROM Company WHERE id = ?", id).Scan(&currentSubscriptionID); err != nil {
+			if err == sql.ErrNoRows {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Company not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to inspect current subscription", "details": err.Error()})
+			return
+		}
+
 		query += ", subscriptionId = ?"
 		args = append(args, *req.SubscriptionID)
+		if !currentSubscriptionID.Valid || currentSubscriptionID.String != *req.SubscriptionID {
+			startedAt, endsAt, err := h.subscriptionWindow(*req.SubscriptionID, time.Now())
+			if err != nil {
+				if err == sql.ErrNoRows {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "Selected subscription plan does not exist"})
+					return
+				}
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve subscription period", "details": err.Error()})
+				return
+			}
+			query += ", subscriptionStartedAt = ?, subscriptionEndsAt = ?"
+			args = append(args, startedAt, endsAt)
+		}
 	}
 
 	query += " WHERE id = ?"
@@ -360,12 +412,13 @@ func (h *CompanyHandler) ActivateCompany(c *gin.Context) {
 // Helper functions
 
 func (h *CompanyHandler) getCompanyByID(id string) (*models.Company, error) {
-	query := `SELECT id, name, email, phone, address, country, logo, status, subscriptionId, createdAt, updatedAt FROM Company WHERE id = ?`
+	query := `SELECT id, name, email, phone, address, country, logo, status, subscriptionId, subscriptionStartedAt, subscriptionEndsAt, createdAt, updatedAt FROM Company WHERE id = ?`
 
 	var company models.Company
 	err := h.db.QueryRow(query, id).Scan(
 		&company.ID, &company.Name, &company.Email, &company.Phone, &company.Address,
 		&company.Country, &company.Logo, &company.Status, &company.SubscriptionID,
+		&company.SubscriptionStartedAt, &company.SubscriptionEndsAt,
 		&company.CreatedAt, &company.UpdatedAt,
 	)
 	if err != nil {
@@ -375,9 +428,34 @@ func (h *CompanyHandler) getCompanyByID(id string) (*models.Company, error) {
 	return &company, nil
 }
 
+func (h *CompanyHandler) subscriptionWindow(subscriptionID string, start time.Time) (*time.Time, *time.Time, error) {
+	var planType string
+	var trialDays int
+	if err := h.db.QueryRow("SELECT planType, trialDays FROM Subscription WHERE id = ? AND isActive = 1", subscriptionID).Scan(&planType, &trialDays); err != nil {
+		return nil, nil, err
+	}
+
+	var end time.Time
+	switch planType {
+	case "trial":
+		if trialDays < 1 {
+			trialDays = 30
+		}
+		end = start.AddDate(0, 0, trialDays)
+	case "yearly":
+		end = start.AddDate(1, 0, 0)
+	case "lifetime":
+		end = start.AddDate(100, 0, 0)
+	default:
+		end = start.AddDate(0, 1, 0)
+	}
+
+	return &start, &end, nil
+}
+
 func (h *CompanyHandler) getSubscriptionByID(id string) (*models.Subscription, error) {
 	query := `
-		SELECT id, planName, planType, maxUsers, maxAircraft, maxFlightsPerMonth, maxStorageGB, 
+		SELECT id, planName, planType, trialDays, maxUsers, maxAircraft, maxFlightsPerMonth, maxStorageGB,
 		       price, currency, startDate, endDate, isActive, autoRenew, lastPaymentDate, 
 		       nextPaymentDate, alertSentAt, createdAt, updatedAt 
 		FROM Subscription WHERE id = ?
@@ -385,7 +463,7 @@ func (h *CompanyHandler) getSubscriptionByID(id string) (*models.Subscription, e
 
 	var sub models.Subscription
 	err := h.db.QueryRow(query, id).Scan(
-		&sub.ID, &sub.PlanName, &sub.PlanType, &sub.MaxUsers, &sub.MaxAircraft,
+		&sub.ID, &sub.PlanName, &sub.PlanType, &sub.TrialDays, &sub.MaxUsers, &sub.MaxAircraft,
 		&sub.MaxFlightsPerMonth, &sub.MaxStorageGB, &sub.Price, &sub.Currency,
 		&sub.StartDate, &sub.EndDate, &sub.IsActive, &sub.AutoRenew,
 		&sub.LastPaymentDate, &sub.NextPaymentDate, &sub.AlertSentAt,

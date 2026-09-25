@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fdm-backend/models"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -29,6 +30,54 @@ func (h *SubscriptionHandler) CreateSubscription(c *gin.Context) {
 	// Generate UUID
 	id := uuid.New().String()
 	now := time.Now()
+	req.PlanType = strings.ToLower(strings.TrimSpace(req.PlanType))
+	if req.PlanType != "trial" && req.PlanType != "monthly" && req.PlanType != "yearly" && req.PlanType != "lifetime" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Plan type must be trial, monthly, yearly, or lifetime"})
+		return
+	}
+	if req.Price < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Price cannot be negative"})
+		return
+	}
+
+	startDate := now
+	if req.StartDate != nil {
+		startDate = *req.StartDate
+	}
+	if req.PlanType == "trial" {
+		if req.TrialDays == 0 {
+			req.TrialDays = 30
+		}
+		if req.TrialDays < 1 || req.TrialDays > 365 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Trial duration must be between 1 and 365 days"})
+			return
+		}
+		req.Price = 0
+		req.AutoRenew = false
+	} else {
+		req.TrialDays = 0
+	}
+
+	endDate := startDate.AddDate(0, 1, 0)
+	switch req.PlanType {
+	case "trial":
+		endDate = startDate.AddDate(0, 0, req.TrialDays)
+	case "yearly":
+		endDate = startDate.AddDate(1, 0, 0)
+	case "lifetime":
+		endDate = startDate.AddDate(100, 0, 0)
+	}
+	if req.EndDate != nil {
+		endDate = *req.EndDate
+	}
+	if !endDate.After(startDate) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "End date must be after start date"})
+		return
+	}
+	isActive := true
+	if req.IsActive != nil {
+		isActive = *req.IsActive
+	}
 
 	// Set defaults if not provided
 	if req.MaxUsers == 0 {
@@ -49,14 +98,14 @@ func (h *SubscriptionHandler) CreateSubscription(c *gin.Context) {
 
 	query := `
 		INSERT INTO Subscription (
-			id, planName, planType, maxUsers, maxAircraft, maxFlightsPerMonth, maxStorageGB,
+			id, planName, planType, trialDays, maxUsers, maxAircraft, maxFlightsPerMonth, maxStorageGB,
 			price, currency, startDate, endDate, isActive, autoRenew, createdAt, updatedAt
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
-	_, err := h.db.Exec(query, id, req.PlanName, req.PlanType, req.MaxUsers, req.MaxAircraft,
-		req.MaxFlightsPerMonth, req.MaxStorageGB, req.Price, req.Currency, req.StartDate,
-		req.EndDate, req.AutoRenew, now, now)
+	_, err := h.db.Exec(query, id, req.PlanName, req.PlanType, req.TrialDays, req.MaxUsers, req.MaxAircraft,
+		req.MaxFlightsPerMonth, req.MaxStorageGB, req.Price, req.Currency, startDate,
+		endDate, isActive, req.AutoRenew, now, now)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create subscription", "details": err.Error()})
 		return
@@ -75,7 +124,7 @@ func (h *SubscriptionHandler) CreateSubscription(c *gin.Context) {
 // GetSubscriptions retrieves all subscriptions
 func (h *SubscriptionHandler) GetSubscriptions(c *gin.Context) {
 	query := `
-		SELECT id, planName, planType, maxUsers, maxAircraft, maxFlightsPerMonth, maxStorageGB,
+		SELECT id, planName, planType, trialDays, maxUsers, maxAircraft, maxFlightsPerMonth, maxStorageGB,
 		       price, currency, startDate, endDate, isActive, autoRenew, lastPaymentDate,
 		       nextPaymentDate, alertSentAt, createdAt, updatedAt
 		FROM Subscription ORDER BY createdAt DESC
@@ -92,7 +141,7 @@ func (h *SubscriptionHandler) GetSubscriptions(c *gin.Context) {
 	for rows.Next() {
 		var sub models.Subscription
 		err := rows.Scan(
-			&sub.ID, &sub.PlanName, &sub.PlanType, &sub.MaxUsers, &sub.MaxAircraft,
+			&sub.ID, &sub.PlanName, &sub.PlanType, &sub.TrialDays, &sub.MaxUsers, &sub.MaxAircraft,
 			&sub.MaxFlightsPerMonth, &sub.MaxStorageGB, &sub.Price, &sub.Currency,
 			&sub.StartDate, &sub.EndDate, &sub.IsActive, &sub.AutoRenew,
 			&sub.LastPaymentDate, &sub.NextPaymentDate, &sub.AlertSentAt,
@@ -199,6 +248,28 @@ func (h *SubscriptionHandler) UpdateSubscription(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	var effectivePlanType string
+	if err := h.db.QueryRow("SELECT planType FROM Subscription WHERE id = ?", id).Scan(&effectivePlanType); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Subscription not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to inspect subscription", "details": err.Error()})
+		return
+	}
+	if req.PlanType != nil {
+		effectivePlanType = strings.ToLower(strings.TrimSpace(*req.PlanType))
+	}
+	if effectivePlanType == "trial" {
+		zeroPrice := 0.0
+		disableAutoRenew := false
+		req.Price = &zeroPrice
+		req.AutoRenew = &disableAutoRenew
+		if req.TrialDays != nil && *req.TrialDays < 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Trial duration must be between 1 and 365 days"})
+			return
+		}
+	}
 
 	// Build dynamic update query
 	query := "UPDATE Subscription SET updatedAt = ?"
@@ -209,8 +280,24 @@ func (h *SubscriptionHandler) UpdateSubscription(c *gin.Context) {
 		args = append(args, *req.PlanName)
 	}
 	if req.PlanType != nil {
+		*req.PlanType = strings.ToLower(strings.TrimSpace(*req.PlanType))
+		if *req.PlanType != "trial" && *req.PlanType != "monthly" && *req.PlanType != "yearly" && *req.PlanType != "lifetime" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Plan type must be trial, monthly, yearly, or lifetime"})
+			return
+		}
 		query += ", planType = ?"
 		args = append(args, *req.PlanType)
+		if *req.PlanType == "trial" {
+			query += ", price = 0, autoRenew = 0, trialDays = CASE WHEN trialDays < 1 THEN 30 ELSE trialDays END"
+		}
+	}
+	if req.TrialDays != nil {
+		if *req.TrialDays < 0 || *req.TrialDays > 365 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Trial duration must be between 1 and 365 days"})
+			return
+		}
+		query += ", trialDays = ?"
+		args = append(args, *req.TrialDays)
 	}
 	if req.MaxUsers != nil {
 		query += ", maxUsers = ?"
@@ -229,6 +316,10 @@ func (h *SubscriptionHandler) UpdateSubscription(c *gin.Context) {
 		args = append(args, *req.MaxStorageGB)
 	}
 	if req.Price != nil {
+		if *req.Price < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Price cannot be negative"})
+			return
+		}
 		query += ", price = ?"
 		args = append(args, *req.Price)
 	}
@@ -325,7 +416,7 @@ func (h *SubscriptionHandler) CheckExpiredSubscriptions(c *gin.Context) {
 
 	// Get all companies with active subscriptions
 	query := `
-		SELECT c.id, c.name, c.email, s.endDate, s.id as subscriptionId
+		SELECT c.id, c.name, c.email, COALESCE(c.subscriptionEndsAt, s.endDate), s.id as subscriptionId
 		FROM Company c
 		JOIN Subscription s ON c.subscriptionId = s.id
 		WHERE c.status = 'active' AND s.isActive = 1
@@ -380,7 +471,7 @@ func (h *SubscriptionHandler) CheckExpiredSubscriptions(c *gin.Context) {
 // Helper function
 func (h *SubscriptionHandler) getSubscriptionByID(id string) (*models.Subscription, error) {
 	query := `
-		SELECT id, planName, planType, maxUsers, maxAircraft, maxFlightsPerMonth, maxStorageGB,
+		SELECT id, planName, planType, trialDays, maxUsers, maxAircraft, maxFlightsPerMonth, maxStorageGB,
 		       price, currency, startDate, endDate, isActive, autoRenew, lastPaymentDate,
 		       nextPaymentDate, alertSentAt, createdAt, updatedAt
 		FROM Subscription WHERE id = ?
@@ -388,7 +479,7 @@ func (h *SubscriptionHandler) getSubscriptionByID(id string) (*models.Subscripti
 
 	var sub models.Subscription
 	err := h.db.QueryRow(query, id).Scan(
-		&sub.ID, &sub.PlanName, &sub.PlanType, &sub.MaxUsers, &sub.MaxAircraft,
+		&sub.ID, &sub.PlanName, &sub.PlanType, &sub.TrialDays, &sub.MaxUsers, &sub.MaxAircraft,
 		&sub.MaxFlightsPerMonth, &sub.MaxStorageGB, &sub.Price, &sub.Currency,
 		&sub.StartDate, &sub.EndDate, &sub.IsActive, &sub.AutoRenew,
 		&sub.LastPaymentDate, &sub.NextPaymentDate, &sub.AlertSentAt,
