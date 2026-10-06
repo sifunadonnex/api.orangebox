@@ -44,9 +44,6 @@ func main() {
 	// File upload configuration
 	router.MaxMultipartMemory = 8 << 20 // 8 MiB
 
-	// Static file serving
-	router.Static("/csvs", "./csvs")
-
 	// Error handling middleware
 	router.Use(middleware.ErrorHandler())
 
@@ -56,6 +53,7 @@ func main() {
 	companyHandler := handlers.NewCompanyHandler(db)
 	subscriptionHandler := handlers.NewSubscriptionHandler(db)
 	aircraftHandler := handlers.NewAircraftHandler(db)
+	decoderProfileHandler := handlers.NewDecoderProfileHandler(db)
 	csvHandler := handlers.NewCSVHandler(db)
 	eventHandler := handlers.NewEventHandler(db)
 	exceedanceHandler := handlers.NewExceedanceHandler(db)
@@ -152,6 +150,15 @@ func main() {
 			aircrafts.GET("/:id", middleware.AnyAuthenticatedUser(), aircraftHandler.GetAircraftByID)
 			aircrafts.PUT("/:id", middleware.GatekeeperOrAbove(), aircraftHandler.UpdateAircraft)
 			aircrafts.DELETE("/:id", middleware.AdminOrFDA(), aircraftHandler.DeleteAircraft)
+			aircrafts.GET("/:id/decoder-profiles", middleware.GatekeeperOrAbove(), decoderProfileHandler.List)
+			aircrafts.POST("/:id/decoder-profiles", middleware.GatekeeperOrAbove(), decoderProfileHandler.Create)
+		}
+		decoderProfiles := api.Group("/decoder-profiles")
+		{
+			decoderProfiles.GET("/:profileId", middleware.GatekeeperOrAbove(), decoderProfileHandler.Get)
+			decoderProfiles.POST("/:profileId/validate", middleware.GatekeeperOrAbove(), decoderProfileHandler.ValidateRecording)
+			decoderProfiles.POST("/:profileId/publish", middleware.AdminOrFDA(), decoderProfileHandler.Publish)
+			decoderProfiles.DELETE("/:profileId", middleware.AdminOrFDA(), decoderProfileHandler.Delete)
 		}
 
 		// CSV/Flight Data Routes

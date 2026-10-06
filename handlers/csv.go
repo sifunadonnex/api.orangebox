@@ -1,10 +1,12 @@
 package handlers
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"encoding/csv"
 	"encoding/json"
 	"fdm-backend/detection"
+	"fdm-backend/ingestion"
 	"fdm-backend/models"
 	"fmt"
 	"io"
@@ -40,15 +42,6 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "No file uploaded", "code": 400})
 		return
 	}
-	if !strings.EqualFold(filepath.Ext(file.Filename), ".csv") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Only CSV files are accepted"})
-		return
-	}
-	if file.Size <= 0 || file.Size > 100*1024*1024 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "CSV file size must be between 1 byte and 100 MB"})
-		return
-	}
-
 	aircraft, err := h.getDetectionAircraft(req.AircraftID)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Aircraft not found"})
@@ -64,27 +57,100 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 	}
 
 	timestamp := time.Now().UnixNano() / int64(time.Millisecond)
-	filename := fmt.Sprintf("%d-%s", timestamp, filepath.Base(file.Filename))
+	filename := fmt.Sprintf("%d-%s.csv", timestamp, safeRecordingStem(file.Filename))
 
 	csvPath := filepath.Join("csvs", filename)
 	if err := os.MkdirAll(filepath.Dir(csvPath), 0o755); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Upload directory is unavailable", "code": 500})
 		return
 	}
-	if err := c.SaveUploadedFile(file, csvPath); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "File upload failed", "code": 500})
+	upload, err := file.Open()
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Recording could not be opened", "details": err.Error()})
 		return
 	}
-	contentHash, err := hashFile(csvPath)
-	if err != nil {
-		_ = os.Remove(csvPath)
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "CSV file could not be verified", "details": err.Error()})
-		return
+	defer upload.Close()
+	var ingestionResult ingestion.Result
+	var canonicalConversion *ingestion.CanonicalConversionResult
+	var rawSourceFormat, rawSourceFile *string
+	var decoderProfileID, decoderProfileChecksum *string
+	var decoderProfileVersion *int
+	cleanupPaths := []string{csvPath}
+	cleanup := func() {
+		for _, path := range cleanupPaths {
+			_ = os.Remove(path)
+		}
+	}
+
+	contentHash := ""
+	if rawFormat, isRaw := rawRecordingFormat(file.Filename); isRaw {
+		if file.Size <= 0 || file.Size > ingestion.MaxUploadBytes {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": fmt.Sprintf("Raw recording size must be between 1 byte and %d MB", ingestion.MaxUploadBytes/(1024*1024))})
+			return
+		}
+		var profileID, profileChecksum, profileText string
+		var profileVersion int
+		err = h.db.QueryRow(`SELECT id, version, checksum, parameterText FROM AircraftDecoderProfile
+			WHERE aircraftId = ? AND status = 'published' AND validationStatus = 'passed'
+			AND parameterFormat = 'fred' LIMIT 1`, req.AircraftID).
+			Scan(&profileID, &profileVersion, &profileChecksum, &profileText)
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"error": "This aircraft does not have a published, recording-validated FRED decoder profile",
+				"code":  "DECODER_PROFILE_REQUIRED",
+			})
+			return
+		}
+		if err != nil {
+			respondDatabaseError(c, err)
+			return
+		}
+		rawBytes, readErr := io.ReadAll(io.LimitReader(upload, ingestion.MaxUploadBytes+1))
+		if readErr != nil || int64(len(rawBytes)) != file.Size {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Raw recording could not be read", "details": errorDetail(readErr)})
+			return
+		}
+		digest := sha256.Sum256(rawBytes)
+		contentHash = fmt.Sprintf("%x", digest[:])
+		conversion, conversionErr := ingestion.DecodeFREDToCanonicalCSV([]byte(profileText), rawBytes, csvPath)
+		if conversionErr != nil {
+			cleanup()
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Raw recording could not be decoded", "details": conversionErr.Error()})
+			return
+		}
+		canonicalConversion = &conversion
+		req.SampleIntervalMs = conversion.SampleIntervalMs
+		ingestionResult = ingestion.Result{
+			SourceFormat: ingestion.FormatCSV, SourceEntry: filepath.Base(file.Filename), NormalizedBytes: conversion.NormalizedBytes,
+		}
+		rawFilename := fmt.Sprintf("%d-%s.%s", timestamp, safeRecordingStem(file.Filename), rawFormat)
+		rawPath := filepath.Join("recordings", rawFilename)
+		if err = writeRawRecording(rawPath, rawBytes); err != nil {
+			cleanup()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Raw recording could not be retained", "details": err.Error()})
+			return
+		}
+		cleanupPaths = append(cleanupPaths, rawPath)
+		rawSourceFormat, rawSourceFile = stringPointer(rawFormat), stringPointer(rawFilename)
+		decoderProfileID, decoderProfileVersion = stringPointer(profileID), &profileVersion
+		decoderProfileChecksum = stringPointer(profileChecksum)
+	} else {
+		ingestionResult, err = ingestion.NormalizeCSV(upload, file.Size, file.Filename, csvPath)
+		if err != nil {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Recording could not be prepared for analysis", "details": err.Error()})
+			return
+		}
+		contentHash, err = hashFile(csvPath)
+		if err != nil {
+			cleanup()
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "CSV file could not be verified", "details": err.Error()})
+			return
+		}
 	}
 	var existingRecordingID string
 	err = h.db.QueryRow(`SELECT id FROM Csv WHERE aircraftId = ? AND contentHash = ? LIMIT 1`, req.AircraftID, contentHash).Scan(&existingRecordingID)
 	if err == nil {
-		_ = os.Remove(csvPath)
+		cleanup()
 		c.JSON(http.StatusConflict, gin.H{
 			"error": "This recording has already been uploaded for the selected aircraft",
 			"code":  "DUPLICATE_RECORDING", "recordingId": existingRecordingID,
@@ -92,13 +158,13 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 		return
 	}
 	if err != sql.ErrNoRows {
-		_ = os.Remove(csvPath)
+		cleanup()
 		respondDatabaseError(c, err)
 		return
 	}
 	segments, segmentationDiagnostics, err := detection.DetectRecordingSegments(csvPath)
 	if err != nil {
-		_ = os.Remove(csvPath)
+		cleanup()
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "CSV recording could not be segmented", "details": err.Error()})
 		return
 	}
@@ -133,19 +199,24 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 	}
 	tx, err := h.db.Begin()
 	if err != nil {
-		_ = os.Remove(csvPath)
+		cleanup()
 		respondDatabaseError(c, err)
 		return
 	}
 	defer tx.Rollback()
 	query := `INSERT INTO Csv (id, name, file, status, aircraftId, departure, destination, flightHours, pilot,
-		sampleIntervalMs, originalFilename, contentHash, uploadedBy, uploadSource, createdAt, updatedAt)
-		VALUES (?, ?, ?, 'processing', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		sampleIntervalMs, originalFilename, contentHash, uploadedBy, uploadSource,
+		sourceFormat, sourceEntry, normalizedBytes, rawSourceFormat, rawSourceFile,
+		decoderProfileId, decoderProfileVersion, decoderProfileChecksum, createdAt, updatedAt)
+		VALUES (?, ?, ?, 'processing', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err = tx.Exec(query, id, req.Name, filename, req.AircraftID, req.Departure, req.Destination,
 		req.FlightHours, req.Pilot, req.SampleIntervalMs, filepath.Base(file.Filename), contentHash,
-		optionalStringPointer(uploadedBy), uploadSource, now.UnixMilli(), now.UnixMilli())
+		optionalStringPointer(uploadedBy), uploadSource, string(ingestionResult.SourceFormat),
+		optionalStringPointer(ingestionResult.SourceEntry), ingestionResult.NormalizedBytes, rawSourceFormat,
+		rawSourceFile, decoderProfileID, decoderProfileVersion, decoderProfileChecksum,
+		now.UnixMilli(), now.UnixMilli())
 	if err != nil {
-		_ = os.Remove(csvPath)
+		cleanup()
 		if strings.Contains(err.Error(), "Csv.aircraftId, Csv.contentHash") {
 			c.JSON(http.StatusConflict, gin.H{"error": "This recording has already been uploaded for the selected aircraft", "code": "DUPLICATE_RECORDING"})
 			return
@@ -155,21 +226,29 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 	}
 
 	recording := models.CSV{
-		ID:               id,
-		Name:             req.Name,
-		File:             filename,
-		AircraftID:       req.AircraftID,
-		Departure:        req.Departure,
-		Destination:      req.Destination,
-		FlightHours:      req.FlightHours,
-		Pilot:            req.Pilot,
-		SampleIntervalMs: &req.SampleIntervalMs,
-		OriginalFilename: stringPointer(filepath.Base(file.Filename)),
-		ContentHash:      stringPointer(contentHash),
-		UploadedBy:       optionalStringPointer(uploadedBy),
-		UploadSource:     stringPointer(uploadSource),
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		ID:                     id,
+		Name:                   req.Name,
+		File:                   filename,
+		AircraftID:             req.AircraftID,
+		Departure:              req.Departure,
+		Destination:            req.Destination,
+		FlightHours:            req.FlightHours,
+		Pilot:                  req.Pilot,
+		SampleIntervalMs:       &req.SampleIntervalMs,
+		OriginalFilename:       stringPointer(filepath.Base(file.Filename)),
+		ContentHash:            stringPointer(contentHash),
+		UploadedBy:             optionalStringPointer(uploadedBy),
+		UploadSource:           stringPointer(uploadSource),
+		SourceFormat:           stringPointer(string(ingestionResult.SourceFormat)),
+		SourceEntry:            optionalStringPointer(ingestionResult.SourceEntry),
+		NormalizedBytes:        &ingestionResult.NormalizedBytes,
+		RawSourceFormat:        rawSourceFormat,
+		RawSourceFile:          rawSourceFile,
+		DecoderProfileID:       decoderProfileID,
+		DecoderProfileVersion:  decoderProfileVersion,
+		DecoderProfileChecksum: decoderProfileChecksum,
+		CreatedAt:              now,
+		UpdatedAt:              now,
 	}
 	if phaseErr == nil {
 		recording.PhaseEngineVersion = stringPointer(phaseResult.EngineVersion)
@@ -213,7 +292,7 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 			flight.StartRow, flight.EndRow, flight.StartSample, flight.EndSample,
 			flight.BoundarySource, now.UnixMilli(), now.UnixMilli())
 		if err != nil {
-			_ = os.Remove(csvPath)
+			cleanup()
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error saving detected flight legs", "details": err.Error()})
 			return
 		}
@@ -221,13 +300,13 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 	}
 	if phaseErr == nil {
 		if err = persistPhaseDetection(tx, id, phaseResult, now); err != nil {
-			_ = os.Remove(csvPath)
+			cleanup()
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error saving detected flight phases", "details": err.Error()})
 			return
 		}
 	}
 	if err = tx.Commit(); err != nil {
-		_ = os.Remove(csvPath)
+		cleanup()
 		respondDatabaseError(c, err)
 		return
 	}
@@ -248,8 +327,87 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{
 		"success": true, "data": flights[0], "recording": recording,
 		"flights": flights, "flightCount": len(flights), "analyses": analyses, "analysis": aggregate,
-		"phaseDetection": phaseResponse,
+		"phaseDetection": phaseResponse, "ingestion": ingestionResult, "canonicalConversion": canonicalConversion,
 	})
+}
+
+func safeRecordingStem(filename string) string {
+	name := filepath.Base(filename)
+	for {
+		extension := strings.ToLower(filepath.Ext(name))
+		if extension != ".csv" && extension != ".zip" && extension != ".gz" && extension != ".gzip" &&
+			extension != ".ddf" && extension != ".dat" && extension != ".raw" && extension != ".bin" {
+			break
+		}
+		name = strings.TrimSuffix(name, filepath.Ext(name))
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "recording"
+	}
+	name = strings.Map(func(value rune) rune {
+		if value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= '0' && value <= '9' || value == '-' || value == '_' {
+			return value
+		}
+		return '-'
+	}, name)
+	name = strings.Trim(name, "-")
+	if name == "" {
+		return "recording"
+	}
+	return name
+}
+
+func rawRecordingFormat(filename string) (string, bool) {
+	format := strings.TrimPrefix(strings.ToLower(filepath.Ext(filename)), ".")
+	switch format {
+	case "ddf", "dat", "raw", "bin":
+		return format, true
+	default:
+		return "", false
+	}
+}
+
+func writeRawRecording(path string, content []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create raw recording directory: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	ok := false
+	defer func() {
+		_ = file.Close()
+		if !ok {
+			_ = os.Remove(path)
+		}
+	}()
+	if _, err = file.Write(content); err != nil {
+		return err
+	}
+	if err = file.Sync(); err != nil {
+		return err
+	}
+	ok = true
+	return nil
+}
+
+func storedRawRecordingPath(filename string) (string, error) {
+	if filename == "" || filename != filepath.Base(filename) {
+		return "", &os.PathError{Op: "resolve raw recording", Path: filename, Err: os.ErrInvalid}
+	}
+	if _, ok := rawRecordingFormat(filename); !ok {
+		return "", &os.PathError{Op: "resolve raw recording", Path: filename, Err: os.ErrInvalid}
+	}
+	return filepath.Join("recordings", filename), nil
+}
+
+func errorDetail(err error) string {
+	if err == nil {
+		return "recording size changed while it was being read"
+	}
+	return err.Error()
 }
 
 // GetCSVs retrieves logical flights with their source-recording metadata.

@@ -47,31 +47,63 @@ type Aircraft struct {
 	Company      *Company  `json:"company,omitempty"`
 }
 
+type AircraftDecoderProfile struct {
+	ID                          string     `json:"id" db:"id"`
+	AircraftID                  string     `json:"aircraftId" db:"aircraftId"`
+	Version                     int        `json:"version" db:"version"`
+	Name                        string     `json:"name" db:"name"`
+	ParameterFormat             string     `json:"parameterFormat" db:"parameterFormat"`
+	ParameterFileName           string     `json:"parameterFileName" db:"parameterFileName"`
+	ParameterText               *string    `json:"parameterText,omitempty" db:"parameterText"`
+	DecoderConfig               string     `json:"decoderConfig" db:"decoderConfig"`
+	Checksum                    string     `json:"checksum" db:"checksum"`
+	Notes                       string     `json:"notes" db:"notes"`
+	Status                      string     `json:"status" db:"status"`
+	ValidationStatus            string     `json:"validationStatus" db:"validationStatus"`
+	ValidationSummary           string     `json:"validationSummary" db:"validationSummary"`
+	ValidationRecordingName     *string    `json:"validationRecordingName,omitempty" db:"validationRecordingName"`
+	ValidationRecordingChecksum *string    `json:"validationRecordingChecksum,omitempty" db:"validationRecordingChecksum"`
+	ValidatedBy                 *string    `json:"validatedBy,omitempty" db:"validatedBy"`
+	ValidatedAt                 *time.Time `json:"validatedAt,omitempty" db:"validatedAt"`
+	CreatedBy                   *string    `json:"createdBy,omitempty" db:"createdBy"`
+	PublishedBy                 *string    `json:"publishedBy,omitempty" db:"publishedBy"`
+	CreatedAt                   time.Time  `json:"createdAt" db:"createdAt"`
+	PublishedAt                 *time.Time `json:"publishedAt,omitempty" db:"publishedAt"`
+}
+
 // CSV represents a CSV file in the system
 type CSV struct {
-	ID                 string    `json:"id" db:"id"`
-	Name               string    `json:"name" db:"name"`
-	File               string    `json:"file" db:"file"`
-	Status             *string   `json:"status" db:"status"`
-	Departure          *string   `json:"departure" db:"departure"`
-	Pilot              *string   `json:"pilot" db:"pilot"`
-	Destination        *string   `json:"destination" db:"destination"`
-	FlightHours        *string   `json:"flightHours" db:"flightHours"`
-	AircraftID         string    `json:"aircraftId" db:"aircraftId"`
-	SampleIntervalMs   *int64    `json:"sampleIntervalMs,omitempty" db:"sampleIntervalMs"`
-	AnalysisSummary    *string   `json:"analysisSummary,omitempty" db:"analysisSummary"`
-	PhaseEngineVersion *string   `json:"phaseEngineVersion,omitempty" db:"phaseEngineVersion"`
-	PhaseProfile       *string   `json:"phaseProfile,omitempty" db:"phaseProfile"`
-	PhaseTimingSource  *string   `json:"phaseTimingSource,omitempty" db:"phaseTimingSource"`
-	PhaseSummary       *string   `json:"phaseSummary,omitempty" db:"phaseSummary"`
-	OriginalFilename   *string   `json:"originalFilename,omitempty" db:"originalFilename"`
-	ContentHash        *string   `json:"contentHash,omitempty" db:"contentHash"`
-	UploadedBy         *string   `json:"uploadedBy,omitempty" db:"uploadedBy"`
-	UploadSource       *string   `json:"uploadSource,omitempty" db:"uploadSource"`
-	UploaderName       *string   `json:"uploaderName,omitempty"`
-	UploaderEmail      *string   `json:"uploaderEmail,omitempty"`
-	CreatedAt          time.Time `json:"createdAt" db:"createdAt"`
-	UpdatedAt          time.Time `json:"updatedAt" db:"updatedAt"`
+	ID                     string    `json:"id" db:"id"`
+	Name                   string    `json:"name" db:"name"`
+	File                   string    `json:"file" db:"file"`
+	Status                 *string   `json:"status" db:"status"`
+	Departure              *string   `json:"departure" db:"departure"`
+	Pilot                  *string   `json:"pilot" db:"pilot"`
+	Destination            *string   `json:"destination" db:"destination"`
+	FlightHours            *string   `json:"flightHours" db:"flightHours"`
+	AircraftID             string    `json:"aircraftId" db:"aircraftId"`
+	SampleIntervalMs       *int64    `json:"sampleIntervalMs,omitempty" db:"sampleIntervalMs"`
+	AnalysisSummary        *string   `json:"analysisSummary,omitempty" db:"analysisSummary"`
+	PhaseEngineVersion     *string   `json:"phaseEngineVersion,omitempty" db:"phaseEngineVersion"`
+	PhaseProfile           *string   `json:"phaseProfile,omitempty" db:"phaseProfile"`
+	PhaseTimingSource      *string   `json:"phaseTimingSource,omitempty" db:"phaseTimingSource"`
+	PhaseSummary           *string   `json:"phaseSummary,omitempty" db:"phaseSummary"`
+	OriginalFilename       *string   `json:"originalFilename,omitempty" db:"originalFilename"`
+	ContentHash            *string   `json:"contentHash,omitempty" db:"contentHash"`
+	UploadedBy             *string   `json:"uploadedBy,omitempty" db:"uploadedBy"`
+	UploadSource           *string   `json:"uploadSource,omitempty" db:"uploadSource"`
+	SourceFormat           *string   `json:"sourceFormat,omitempty" db:"sourceFormat"`
+	SourceEntry            *string   `json:"sourceEntry,omitempty" db:"sourceEntry"`
+	NormalizedBytes        *int64    `json:"normalizedBytes,omitempty" db:"normalizedBytes"`
+	RawSourceFormat        *string   `json:"rawSourceFormat,omitempty" db:"rawSourceFormat"`
+	RawSourceFile          *string   `json:"rawSourceFile,omitempty" db:"rawSourceFile"`
+	DecoderProfileID       *string   `json:"decoderProfileId,omitempty" db:"decoderProfileId"`
+	DecoderProfileVersion  *int      `json:"decoderProfileVersion,omitempty" db:"decoderProfileVersion"`
+	DecoderProfileChecksum *string   `json:"decoderProfileChecksum,omitempty" db:"decoderProfileChecksum"`
+	UploaderName           *string   `json:"uploaderName,omitempty"`
+	UploaderEmail          *string   `json:"uploaderEmail,omitempty"`
+	CreatedAt              time.Time `json:"createdAt" db:"createdAt"`
+	UpdatedAt              time.Time `json:"updatedAt" db:"updatedAt"`
 }
 
 // FlightLeg represents one logical flight contained in an uploaded CSV

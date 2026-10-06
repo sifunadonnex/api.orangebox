@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -17,10 +18,14 @@ import (
 )
 
 func uploadRequest(t *testing.T, aircraftID string, content []byte) *http.Request {
+	return uploadNamedRequest(t, aircraftID, "logger.csv", content)
+}
+
+func uploadNamedRequest(t *testing.T, aircraftID, filename string, content []byte) *http.Request {
 	t.Helper()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("file", "logger.csv")
+	part, err := writer.CreateFormFile("file", filename)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,6 +47,19 @@ func uploadRequest(t *testing.T, aircraftID string, content []byte) *http.Reques
 	return request
 }
 
+func gzipRecording(t *testing.T, content []byte) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	writer := gzip.NewWriter(&output)
+	if _, err := writer.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return output.Bytes()
+}
+
 func uploadTestDatabase(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+t.Name()+"?mode=memory&cache=shared")
@@ -54,7 +72,12 @@ func uploadTestDatabase(t *testing.T) *sql.DB {
 		modelNumber TEXT, serialNumber TEXT NOT NULL, registration TEXT,
 		companyId TEXT NOT NULL, parameters TEXT
 	);
-	CREATE TABLE Csv (id TEXT PRIMARY KEY, aircraftId TEXT NOT NULL, contentHash TEXT);`)
+	CREATE TABLE Csv (id TEXT PRIMARY KEY, aircraftId TEXT NOT NULL, contentHash TEXT);
+	CREATE TABLE AircraftDecoderProfile (
+		id TEXT PRIMARY KEY, aircraftId TEXT NOT NULL, version INTEGER NOT NULL,
+		checksum TEXT NOT NULL, parameterText TEXT NOT NULL, status TEXT NOT NULL,
+		validationStatus TEXT NOT NULL, parameterFormat TEXT NOT NULL
+	);`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,5 +137,43 @@ func TestClientUploadRejectsDuplicateForOwnedAircraft(t *testing.T) {
 	}
 	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"code":"DUPLICATE_RECORDING"`)) {
 		t.Fatalf("expected stable duplicate error code, got %s", recorder.Body.String())
+	}
+}
+
+func TestClientUploadNormalizesGZIPBeforeDuplicateCheck(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := uploadTestDatabase(t)
+	insertUploadTestAircraft(t, db, "aircraft-a", "company-a")
+	content := []byte("Time,IAS\n00:00:00,100\n")
+	sum := sha256.Sum256(content)
+	_, err := db.Exec(`INSERT INTO Csv (id, aircraftId, contentHash) VALUES ('existing-recording', ?, ?)`,
+		"aircraft-a", hex.EncodeToString(sum[:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := uploadNamedRequest(t, "aircraft-a", "logger.csv.gz", gzipRecording(t, content))
+	context, recorder := uploadContext(request, "company-a")
+
+	NewCSVHandler(db).UploadCSV(context)
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("expected normalized GZIP duplicate conflict, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRawUploadRequiresPublishedValidatedFREDProfile(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := uploadTestDatabase(t)
+	insertUploadTestAircraft(t, db, "aircraft-a", "company-a")
+	request := uploadNamedRequest(t, "aircraft-a", "recorder.ddf", []byte("not-yet-decoded"))
+	context, recorder := uploadContext(request, "company-a")
+
+	NewCSVHandler(db).UploadCSV(context)
+
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected decoder profile requirement, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"code":"DECODER_PROFILE_REQUIRED"`)) {
+		t.Fatalf("expected stable decoder profile error code, got %s", recorder.Body.String())
 	}
 }

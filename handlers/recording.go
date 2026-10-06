@@ -195,7 +195,8 @@ func (h *CSVHandler) DeleteRecording(c *gin.Context) {
 		return
 	}
 	var name, filename string
-	lookupQuery := `SELECT c.name, c.file FROM Csv c
+	var rawFilename sql.NullString
+	lookupQuery := `SELECT c.name, c.file, c.rawSourceFile FROM Csv c
 		JOIN Aircraft a ON a.id = c.aircraftId
 		WHERE c.id = ?`
 	lookupArgs := []interface{}{c.Param("id")}
@@ -209,7 +210,7 @@ func (h *CSVHandler) DeleteRecording(c *gin.Context) {
 		lookupQuery += " AND a.companyId = ?"
 		lookupArgs = append(lookupArgs, companyID)
 	}
-	err := h.db.QueryRow(lookupQuery, lookupArgs...).Scan(&name, &filename)
+	err := h.db.QueryRow(lookupQuery, lookupArgs...).Scan(&name, &filename, &rawFilename)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Recording not found"})
 		return
@@ -247,6 +248,13 @@ func (h *CSVHandler) DeleteRecording(c *gin.Context) {
 			warning = "Database records were deleted, but the stored source file could not be removed"
 		}
 	}
+	if rawFilename.Valid {
+		if path, pathErr := storedRawRecordingPath(rawFilename.String); pathErr == nil {
+			if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				warning = "Database records were deleted, but the retained raw recording could not be removed"
+			}
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true, "message": "Recording and all contained flights were deleted",
 		"fileDeleted": fileDeleted, "warning": warning,
@@ -260,6 +268,8 @@ func (h *CSVHandler) loadRecordingReview(recordingID string) (recordingReviewRes
 	err := h.db.QueryRow(`SELECT c.id, c.name, c.file, c.status, c.departure, c.pilot,
 		c.destination, c.flightHours, c.aircraftId, c.sampleIntervalMs,
 		c.analysisSummary, c.originalFilename, c.uploadedBy, c.uploadSource,
+		c.sourceFormat, c.sourceEntry, c.normalizedBytes, c.rawSourceFormat,
+		c.rawSourceFile, c.decoderProfileId, c.decoderProfileVersion, c.decoderProfileChecksum,
 		u.fullName, u.email, c.createdAt, c.updatedAt, a.companyId
 		FROM Csv c JOIN Aircraft a ON a.id = c.aircraftId
 		LEFT JOIN User u ON u.id = c.uploadedBy WHERE c.id = ?`, recordingID).Scan(
@@ -269,6 +279,10 @@ func (h *CSVHandler) loadRecordingReview(recordingID string) (recordingReviewRes
 		&response.Recording.AircraftID, &response.Recording.SampleIntervalMs,
 		&response.Recording.AnalysisSummary, &response.Recording.OriginalFilename,
 		&response.Recording.UploadedBy, &response.Recording.UploadSource,
+		&response.Recording.SourceFormat, &response.Recording.SourceEntry,
+		&response.Recording.NormalizedBytes, &response.Recording.RawSourceFormat,
+		&response.Recording.RawSourceFile, &response.Recording.DecoderProfileID,
+		&response.Recording.DecoderProfileVersion, &response.Recording.DecoderProfileChecksum,
 		&response.Recording.UploaderName, &response.Recording.UploaderEmail,
 		&createdAt, &updatedAt, &companyID,
 	)
