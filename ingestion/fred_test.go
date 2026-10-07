@@ -171,6 +171,36 @@ func TestBeaconCRJFixture(t *testing.T) {
 	t.Logf("%s", report.Message)
 }
 
+func TestBeaconDHC8DLUFixture(t *testing.T) {
+	directory := os.Getenv("BEACON_FLIGHTDATA_DIR")
+	if directory == "" {
+		t.Skip("BEACON_FLIGHTDATA_DIR is not set")
+	}
+	profile, err := os.ReadFile(filepath.Join(directory, "DHC8FDR_frame.xml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recording, err := os.ReadFile(filepath.Join(directory, "5Y-SKO050626.dlu"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareRecorderPayload("5Y-SKO050626.dlu", recording)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := ValidateFREDRecording(profile, prepared.Payload)
+	if err != nil {
+		t.Fatalf("fixture validation failed with adapter %s and partial report %+v: %v", prepared.Adapter, report, err)
+	}
+	if report.ProfileWordsPerSecond != 64 || report.Recording.InSyncPct < 95 {
+		t.Fatalf("unexpected fixture report: %+v", report)
+	}
+	if report.ParametersDecoded == 0 {
+		t.Fatal("expected at least one decoded parameter")
+	}
+	t.Logf("adapter=%s format=%s: %s", prepared.Adapter, prepared.ContainerFormat, report.Message)
+}
+
 func TestBeaconCRJCanonicalFixture(t *testing.T) {
 	directory := os.Getenv("BEACON_FLIGHTDATA_DIR")
 	if directory == "" {
