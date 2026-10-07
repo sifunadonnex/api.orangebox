@@ -70,6 +70,24 @@ func TestCompileFREDProfile(t *testing.T) {
 	}
 }
 
+func TestFREDCanonicalParametersIncludesDerivedVerticalSpeed(t *testing.T) {
+	parameters, err := FREDCanonicalParameters([]byte(syntheticFRED))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wanted := map[string]bool{"Airspeed": false, "Altitude": false, "Vertical Speed": false}
+	for _, parameter := range parameters {
+		if _, ok := wanted[parameter]; ok {
+			wanted[parameter] = true
+		}
+	}
+	for parameter, found := range wanted {
+		if !found {
+			t.Fatalf("expected canonical parameter %s in %#v", parameter, parameters)
+		}
+	}
+}
+
 func TestValidateFREDRecording(t *testing.T) {
 	words := make([]uint16, 80*64)
 	for subframe := 0; subframe < 80; subframe++ {

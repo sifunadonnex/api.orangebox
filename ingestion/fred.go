@@ -101,6 +101,30 @@ type canonicalSignal struct {
 	HasValue  bool
 }
 
+type canonicalDefinition struct {
+	header     string
+	identities []string
+	required   bool
+}
+
+var fredCanonicalDefinitions = []canonicalDefinition{
+	{"Airspeed", []string{"lcomputedairspeed", "computedairspeed", "lindicatedairspeed", "indicatedairspeed", "rcomputedairspeed"}, true},
+	{"Altitude", []string{"lpressurealtitude", "pressurealtitude", "rpressurealtitude"}, true},
+	{"Pitch", []string{"lpitchangle", "pitchangle", "rpitchangle"}, false},
+	{"Roll", []string{"lrollangle", "rollangle", "rrollangle"}, false},
+	{"Vertical Acceleration", []string{"verticalacceleration", "normalacceleration"}, false},
+	{"Radio Altitude", []string{"lradioaltitude", "radioaltitude", "rradioaltitude"}, false},
+	{"Ground Speed", []string{"lgroundspeed", "groundspeed", "rgroundspeed"}, false},
+	{"WOW", []string{"lgearwow", "nosegearwow", "gearwow", "rgearwow", "weightonwheels"}, false},
+	{"Flaps", []string{"lflapposition", "flapposition", "rflapposition"}, false},
+	{"Heading", []string{"lmagneticheading", "magneticheading", "rmagneticheading", "trueheading"}, false},
+	{"Left Engine N1", []string{"lenginen1", "leftenginen1"}, false},
+	{"Right Engine N1", []string{"renginen1", "rightenginen1"}, false},
+	{"GMT Hours", []string{"utctimehour", "gmttimehour", "gmthours"}, false},
+	{"GMT Minutes", []string{"utctimeminute", "gmttimeminute", "gmtminutes"}, false},
+	{"GMT Seconds", []string{"utctimesecond", "gmttimesecond", "gmtseconds"}, false},
+}
+
 type fredDocument struct {
 	FRED717 fred717 `xml:"FRED717"`
 }
@@ -392,31 +416,9 @@ func DecodeFREDToCanonicalCSV(profileContent, recording []byte, destination stri
 		return result, fmt.Errorf("recording synchronization is %.1f%%; at least 95%% is required", quality.InSyncPct)
 	}
 
-	definitions := []struct {
-		header     string
-		identities []string
-		required   bool
-	}{
-		{"Airspeed", []string{"lcomputedairspeed", "computedairspeed", "lindicatedairspeed", "indicatedairspeed", "rcomputedairspeed"}, true},
-		{"Altitude", []string{"lpressurealtitude", "pressurealtitude", "rpressurealtitude"}, true},
-		{"Pitch", []string{"lpitchangle", "pitchangle", "rpitchangle"}, false},
-		{"Roll", []string{"lrollangle", "rollangle", "rrollangle"}, false},
-		{"Vertical Acceleration", []string{"verticalacceleration", "normalacceleration"}, false},
-		{"Radio Altitude", []string{"lradioaltitude", "radioaltitude", "rradioaltitude"}, false},
-		{"Ground Speed", []string{"lgroundspeed", "groundspeed", "rgroundspeed"}, false},
-		{"WOW", []string{"lgearwow", "nosegearwow", "gearwow", "rgearwow", "weightonwheels"}, false},
-		{"Flaps", []string{"lflapposition", "flapposition", "rflapposition"}, false},
-		{"Heading", []string{"lmagneticheading", "magneticheading", "rmagneticheading", "trueheading"}, false},
-		{"Left Engine N1", []string{"lenginen1", "leftenginen1"}, false},
-		{"Right Engine N1", []string{"renginen1", "rightenginen1"}, false},
-		{"GMT Hours", []string{"utctimehour", "gmttimehour", "gmthours"}, false},
-		{"GMT Minutes", []string{"utctimeminute", "gmttimeminute", "gmtminutes"}, false},
-		{"GMT Seconds", []string{"utctimesecond", "gmttimesecond", "gmtseconds"}, false},
-	}
-
-	signals := make([]canonicalSignal, 0, len(definitions))
+	signals := make([]canonicalSignal, 0, len(fredCanonicalDefinitions))
 	missing := make([]string, 0)
-	for _, definition := range definitions {
+	for _, definition := range fredCanonicalDefinitions {
 		parameter := findFREDParameter(profile.Parameters, definition.identities...)
 		if parameter == nil {
 			if definition.required {
@@ -553,6 +555,30 @@ func DecodeFREDToCanonicalCSV(profileContent, recording []byte, destination stri
 		SampleIntervalMs: int64(math.Round(profile.SecondsPerSubframe * 1000)),
 		NormalizedBytes:  info.Size(), MissingCanonicalData: missing,
 	}, nil
+}
+
+// FREDCanonicalParameters reports the canonical analysis columns a profile can
+// populate. Vertical speed is derived from altitude by the canonical decoder.
+func FREDCanonicalParameters(profileContent []byte) ([]string, error) {
+	profile, err := CompileFREDProfile(profileContent)
+	if err != nil {
+		return nil, err
+	}
+	parameters := make([]string, 0, len(fredCanonicalDefinitions)+1)
+	hasAltitude := false
+	for _, definition := range fredCanonicalDefinitions {
+		if findFREDParameter(profile.Parameters, definition.identities...) == nil {
+			continue
+		}
+		parameters = append(parameters, definition.header)
+		if definition.header == "Altitude" {
+			hasAltitude = true
+		}
+	}
+	if hasAltitude {
+		parameters = append(parameters, "Vertical Speed")
+	}
+	return parameters, nil
 }
 
 func findFREDParameter(parameters []FREDParameter, identities ...string) *FREDParameter {

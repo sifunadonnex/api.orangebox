@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fdm-backend/ingestion"
 	"fmt"
 	"net/http"
 	"strings"
@@ -680,6 +681,19 @@ func (h *EventHandler) validateParameterCoverage(assignments []models.EventAssig
 			}
 			checkedAircraft[aircraftID] = true
 			available := parseAircraftParameters(raw.String)
+			var profileText string
+			profileErr := h.db.QueryRow(`SELECT parameterText FROM AircraftDecoderProfile
+				WHERE aircraftId = ? AND status = 'published' AND validationStatus = 'passed'
+				AND parameterFormat = 'fred' LIMIT 1`, aircraftID).Scan(&profileText)
+			if profileErr == nil {
+				if canonicalParameters, compileErr := ingestion.FREDCanonicalParameters([]byte(profileText)); compileErr == nil {
+					for _, parameter := range canonicalParameters {
+						available[normalizeParameterForMatch(parameter)] = true
+					}
+				}
+			} else if profileErr != sql.ErrNoRows && !strings.Contains(strings.ToLower(profileErr.Error()), "no such table") {
+				errorsFound = append(errorsFound, fmt.Sprintf("aircraft %s decoder parameter coverage could not be read", aircraftID))
+			}
 			for parameter := range required {
 				if !available[parameter] {
 					errorsFound = append(errorsFound, fmt.Sprintf("aircraft %s does not declare required parameter %s", aircraftID, parameter))
