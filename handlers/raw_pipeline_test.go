@@ -23,8 +23,12 @@ func TestBeaconRawRecordingFeedsCanonicalFlightPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	prepared, err := ingestion.PrepareRecorderPayload("5Y-DRM080926.ddf", recording)
+	if err != nil {
+		t.Fatal(err)
+	}
 	canonicalPath := filepath.Join(t.TempDir(), "beacon-canonical.csv")
-	conversion, err := ingestion.DecodeFREDToCanonicalCSV(profile, recording, canonicalPath)
+	conversion, err := ingestion.DecodeFREDToCanonicalCSV(profile, prepared.Payload, canonicalPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,5 +46,5 @@ func TestBeaconRawRecordingFeedsCanonicalFlightPipeline(t *testing.T) {
 	if phases.RowCount != conversion.Rows || len(phases.Runs) == 0 {
 		t.Fatalf("canonical phase detection did not consume the conversion: rows=%d/%d runs=%d", phases.RowCount, conversion.Rows, len(phases.Runs))
 	}
-	t.Logf("canonical pipeline produced %d conservative segments, %d phase runs, and %d airborne flights", len(segments), len(phases.Runs), len(phases.Flights))
+	t.Logf("%s adapter produced %d conservative segments, %d phase runs, and %d airborne flights", prepared.Adapter, len(segments), len(phases.Runs), len(phases.Flights))
 }

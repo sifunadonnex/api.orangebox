@@ -26,10 +26,17 @@ func TestRawRecordingMigrationStoresDecoderProvenance(t *testing.T) {
 	if _, err = db.Exec(string(migration)); err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
+	adapterMigration, err := os.ReadFile("migrations/018_recorder_adapter_provenance.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(string(adapterMigration)); err != nil {
+		t.Fatalf("adapter migration failed: %v", err)
+	}
 	if _, err = db.Exec(`INSERT INTO AircraftDecoderProfile (id) VALUES ('profile-1');
 		INSERT INTO Csv (id, rawSourceFormat, rawSourceFile, decoderProfileId,
-			decoderProfileVersion, decoderProfileChecksum)
-		VALUES ('recording-1', 'ddf', 'source.ddf', 'profile-1', 3, 'profile-hash');`); err != nil {
+			decoderProfileVersion, decoderProfileChecksum, recorderContainerFormat, recorderAdapter)
+		VALUES ('recording-1', 'ddf', 'source.ddf', 'profile-1', 3, 'profile-hash', 'ddf', 'plain-arinc');`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = db.Exec(`INSERT INTO Csv (id, rawSourceFormat) VALUES ('invalid', 'fdr')`); err == nil {

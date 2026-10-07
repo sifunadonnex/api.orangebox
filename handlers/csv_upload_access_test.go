@@ -177,3 +177,20 @@ func TestRawUploadRequiresPublishedValidatedFREDProfile(t *testing.T) {
 		t.Fatalf("expected stable decoder profile error code, got %s", recorder.Body.String())
 	}
 }
+
+func TestPackedRecorderUploadReturnsExportGuidance(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := uploadTestDatabase(t)
+	insertUploadTestAircraft(t, db, "aircraft-a", "company-a")
+	request := uploadNamedRequest(t, "aircraft-a", "packed.fdt", []byte("manufacturer-packed"))
+	context, recorder := uploadContext(request, "company-a")
+
+	NewCSVHandler(db).UploadCSV(context)
+
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected packed-format rejection, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte("ground software")) {
+		t.Fatalf("expected manufacturer export guidance, got %s", recorder.Body.String())
+	}
+}

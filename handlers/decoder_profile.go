@@ -211,7 +211,12 @@ func (h *DecoderProfileHandler) ValidateRecording(c *gin.Context) {
 		return
 	}
 
-	report, validationErr := ingestion.ValidateFREDRecording([]byte(*profile.ParameterText), recording)
+	prepared, preparationErr := ingestion.PrepareRecorderPayload(fileHeader.Filename, recording)
+	var report ingestion.RecordingValidationReport
+	validationErr := preparationErr
+	if validationErr == nil {
+		report, validationErr = ingestion.ValidateFREDRecording([]byte(*profile.ParameterText), prepared.Payload)
+	}
 	status := "passed"
 	var validationJSON []byte
 	if validationErr != nil {
@@ -240,6 +245,7 @@ func (h *DecoderProfileHandler) ValidateRecording(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true, "status": status, "validation": report,
 		"recordingName": filepath.Base(fileHeader.Filename), "validatedAt": now,
+		"recorderAdapter": prepared.Adapter, "containerFormat": prepared.ContainerFormat,
 	})
 }
 

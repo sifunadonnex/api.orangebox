@@ -6,7 +6,73 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
+	"strings"
 )
+
+type RecorderPreparation struct {
+	Payload         []byte `json:"-"`
+	ContainerFormat string `json:"containerFormat"`
+	Adapter         string `json:"adapter"`
+	Transformed     bool   `json:"transformed"`
+}
+
+// PrepareRecorderPayload converts a supported recorder container into the
+// plain ARINC 573/717 byte stream expected by FRED validation and decoding.
+// Detection remains deliberately conservative: manufacturer-packed FDR/FDT
+// images are never guessed or silently treated as flat data.
+func PrepareRecorderPayload(filename string, data []byte) (RecorderPreparation, error) {
+	format := strings.TrimPrefix(strings.ToLower(filepath.Ext(filename)), ".")
+	plain := func(adapter string) (RecorderPreparation, error) {
+		if _, err := DetectARINC717(data); err != nil {
+			return RecorderPreparation{}, err
+		}
+		return RecorderPreparation{Payload: data, ContainerFormat: format, Adapter: adapter}, nil
+	}
+
+	switch format {
+	case "ddf", "raw", "bin":
+		return RecorderPreparation{Payload: data, ContainerFormat: format, Adapter: "plain-arinc"}, nil
+	case "dlu":
+		prepared, err := plain("honeywell-dlu-plain")
+		if err != nil {
+			return RecorderPreparation{}, errors.New("Honeywell DLU is not a plain ARINC frame stream; compressed DLU downloads must be exported with the manufacturer's ground software")
+		}
+		return prepared, nil
+	case "dat":
+		if prepared, err := plain("plain-arinc-dat"); err == nil {
+			return prepared, nil
+		}
+		payload, _, err := UnwrapL3Flat(data)
+		if err != nil {
+			return RecorderPreparation{}, err
+		}
+		return RecorderPreparation{Payload: payload, ContainerFormat: format, Adapter: "l3-flat", Transformed: true}, nil
+	case "tsc":
+		if prepared, err := plain("plain-arinc-tsc"); err == nil {
+			return prepared, nil
+		}
+		payload, _, err := UnwrapAvionicaTSC(data)
+		if err != nil {
+			return RecorderPreparation{}, err
+		}
+		return RecorderPreparation{Payload: payload, ContainerFormat: format, Adapter: "avionica-tsc", Transformed: true}, nil
+	case "dfd":
+		var payload bytes.Buffer
+		if _, err := ExtractA220DFD(bytes.NewReader(data), int64(len(data)), &payload, 0); err != nil {
+			return RecorderPreparation{}, err
+		}
+		prepared := payload.Bytes()
+		if _, err := DetectARINC717(prepared); err != nil {
+			return RecorderPreparation{}, fmt.Errorf("A220 DFD payload does not contain a supported ARINC 717 stream: %w", err)
+		}
+		return RecorderPreparation{Payload: prepared, ContainerFormat: format, Adapter: "a220-dfd", Transformed: true}, nil
+	case "fdr", "fdt":
+		return RecorderPreparation{}, errors.New("packed FDR/FDT files must first be exported to a flat .dat file with the manufacturer's ground software")
+	default:
+		return RecorderPreparation{}, fmt.Errorf("unsupported recorder format %q", format)
+	}
+}
 
 const (
 	A220DFDRecordBytes  int64 = 4096

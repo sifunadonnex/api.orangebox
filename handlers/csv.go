@@ -73,6 +73,7 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 	var ingestionResult ingestion.Result
 	var canonicalConversion *ingestion.CanonicalConversionResult
 	var rawSourceFormat, rawSourceFile *string
+	var recorderContainerFormat, recorderAdapter *string
 	var decoderProfileID, decoderProfileChecksum *string
 	var decoderProfileVersion *int
 	cleanupPaths := []string{csvPath}
@@ -112,7 +113,13 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 		}
 		digest := sha256.Sum256(rawBytes)
 		contentHash = fmt.Sprintf("%x", digest[:])
-		conversion, conversionErr := ingestion.DecodeFREDToCanonicalCSV([]byte(profileText), rawBytes, csvPath)
+		prepared, preparationErr := ingestion.PrepareRecorderPayload(file.Filename, rawBytes)
+		if preparationErr != nil {
+			cleanup()
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Recorder container could not be prepared", "details": preparationErr.Error()})
+			return
+		}
+		conversion, conversionErr := ingestion.DecodeFREDToCanonicalCSV([]byte(profileText), prepared.Payload, csvPath)
 		if conversionErr != nil {
 			cleanup()
 			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Raw recording could not be decoded", "details": conversionErr.Error()})
@@ -131,10 +138,22 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 			return
 		}
 		cleanupPaths = append(cleanupPaths, rawPath)
-		rawSourceFormat, rawSourceFile = stringPointer(rawFormat), stringPointer(rawFilename)
+		if rawFormat == "ddf" || rawFormat == "dat" || rawFormat == "raw" || rawFormat == "bin" {
+			rawSourceFormat = stringPointer(rawFormat)
+		}
+		rawSourceFile = stringPointer(rawFilename)
+		recorderContainerFormat, recorderAdapter = stringPointer(prepared.ContainerFormat), stringPointer(prepared.Adapter)
 		decoderProfileID, decoderProfileVersion = stringPointer(profileID), &profileVersion
 		decoderProfileChecksum = stringPointer(profileChecksum)
 	} else {
+		extension := strings.ToLower(filepath.Ext(file.Filename))
+		if extension == ".fdr" || extension == ".fdt" {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"error":   "Packed recorder files are not accepted directly",
+				"details": "Export FA2100 .FDR or F1000 .fdt data to a flat .dat file with the manufacturer's ground software, then upload the .dat file.",
+			})
+			return
+		}
 		ingestionResult, err = ingestion.NormalizeCSV(upload, file.Size, file.Filename, csvPath)
 		if err != nil {
 			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Recording could not be prepared for analysis", "details": err.Error()})
@@ -207,13 +226,15 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 	query := `INSERT INTO Csv (id, name, file, status, aircraftId, departure, destination, flightHours, pilot,
 		sampleIntervalMs, originalFilename, contentHash, uploadedBy, uploadSource,
 		sourceFormat, sourceEntry, normalizedBytes, rawSourceFormat, rawSourceFile,
+		recorderContainerFormat, recorderAdapter,
 		decoderProfileId, decoderProfileVersion, decoderProfileChecksum, createdAt, updatedAt)
-		VALUES (?, ?, ?, 'processing', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		VALUES (?, ?, ?, 'processing', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err = tx.Exec(query, id, req.Name, filename, req.AircraftID, req.Departure, req.Destination,
 		req.FlightHours, req.Pilot, req.SampleIntervalMs, filepath.Base(file.Filename), contentHash,
 		optionalStringPointer(uploadedBy), uploadSource, string(ingestionResult.SourceFormat),
 		optionalStringPointer(ingestionResult.SourceEntry), ingestionResult.NormalizedBytes, rawSourceFormat,
-		rawSourceFile, decoderProfileID, decoderProfileVersion, decoderProfileChecksum,
+		rawSourceFile, recorderContainerFormat, recorderAdapter,
+		decoderProfileID, decoderProfileVersion, decoderProfileChecksum,
 		now.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		cleanup()
@@ -226,29 +247,31 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 	}
 
 	recording := models.CSV{
-		ID:                     id,
-		Name:                   req.Name,
-		File:                   filename,
-		AircraftID:             req.AircraftID,
-		Departure:              req.Departure,
-		Destination:            req.Destination,
-		FlightHours:            req.FlightHours,
-		Pilot:                  req.Pilot,
-		SampleIntervalMs:       &req.SampleIntervalMs,
-		OriginalFilename:       stringPointer(filepath.Base(file.Filename)),
-		ContentHash:            stringPointer(contentHash),
-		UploadedBy:             optionalStringPointer(uploadedBy),
-		UploadSource:           stringPointer(uploadSource),
-		SourceFormat:           stringPointer(string(ingestionResult.SourceFormat)),
-		SourceEntry:            optionalStringPointer(ingestionResult.SourceEntry),
-		NormalizedBytes:        &ingestionResult.NormalizedBytes,
-		RawSourceFormat:        rawSourceFormat,
-		RawSourceFile:          rawSourceFile,
-		DecoderProfileID:       decoderProfileID,
-		DecoderProfileVersion:  decoderProfileVersion,
-		DecoderProfileChecksum: decoderProfileChecksum,
-		CreatedAt:              now,
-		UpdatedAt:              now,
+		ID:                      id,
+		Name:                    req.Name,
+		File:                    filename,
+		AircraftID:              req.AircraftID,
+		Departure:               req.Departure,
+		Destination:             req.Destination,
+		FlightHours:             req.FlightHours,
+		Pilot:                   req.Pilot,
+		SampleIntervalMs:        &req.SampleIntervalMs,
+		OriginalFilename:        stringPointer(filepath.Base(file.Filename)),
+		ContentHash:             stringPointer(contentHash),
+		UploadedBy:              optionalStringPointer(uploadedBy),
+		UploadSource:            stringPointer(uploadSource),
+		SourceFormat:            stringPointer(string(ingestionResult.SourceFormat)),
+		SourceEntry:             optionalStringPointer(ingestionResult.SourceEntry),
+		NormalizedBytes:         &ingestionResult.NormalizedBytes,
+		RawSourceFormat:         rawSourceFormat,
+		RawSourceFile:           rawSourceFile,
+		RecorderContainerFormat: recorderContainerFormat,
+		RecorderAdapter:         recorderAdapter,
+		DecoderProfileID:        decoderProfileID,
+		DecoderProfileVersion:   decoderProfileVersion,
+		DecoderProfileChecksum:  decoderProfileChecksum,
+		CreatedAt:               now,
+		UpdatedAt:               now,
 	}
 	if phaseErr == nil {
 		recording.PhaseEngineVersion = stringPointer(phaseResult.EngineVersion)
@@ -336,7 +359,8 @@ func safeRecordingStem(filename string) string {
 	for {
 		extension := strings.ToLower(filepath.Ext(name))
 		if extension != ".csv" && extension != ".zip" && extension != ".gz" && extension != ".gzip" &&
-			extension != ".ddf" && extension != ".dat" && extension != ".raw" && extension != ".bin" {
+			extension != ".ddf" && extension != ".dat" && extension != ".raw" && extension != ".bin" &&
+			extension != ".dlu" && extension != ".tsc" && extension != ".dfd" {
 			break
 		}
 		name = strings.TrimSuffix(name, filepath.Ext(name))
@@ -361,7 +385,7 @@ func safeRecordingStem(filename string) string {
 func rawRecordingFormat(filename string) (string, bool) {
 	format := strings.TrimPrefix(strings.ToLower(filepath.Ext(filename)), ".")
 	switch format {
-	case "ddf", "dat", "raw", "bin":
+	case "ddf", "dat", "raw", "bin", "dlu", "tsc", "dfd":
 		return format, true
 	default:
 		return "", false

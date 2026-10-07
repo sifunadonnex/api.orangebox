@@ -269,7 +269,8 @@ func (h *CSVHandler) loadRecordingReview(recordingID string) (recordingReviewRes
 		c.destination, c.flightHours, c.aircraftId, c.sampleIntervalMs,
 		c.analysisSummary, c.originalFilename, c.uploadedBy, c.uploadSource,
 		c.sourceFormat, c.sourceEntry, c.normalizedBytes, c.rawSourceFormat,
-		c.rawSourceFile, c.decoderProfileId, c.decoderProfileVersion, c.decoderProfileChecksum,
+		c.rawSourceFile, c.recorderContainerFormat, c.recorderAdapter,
+		c.decoderProfileId, c.decoderProfileVersion, c.decoderProfileChecksum,
 		u.fullName, u.email, c.createdAt, c.updatedAt, a.companyId
 		FROM Csv c JOIN Aircraft a ON a.id = c.aircraftId
 		LEFT JOIN User u ON u.id = c.uploadedBy WHERE c.id = ?`, recordingID).Scan(
@@ -281,7 +282,8 @@ func (h *CSVHandler) loadRecordingReview(recordingID string) (recordingReviewRes
 		&response.Recording.UploadedBy, &response.Recording.UploadSource,
 		&response.Recording.SourceFormat, &response.Recording.SourceEntry,
 		&response.Recording.NormalizedBytes, &response.Recording.RawSourceFormat,
-		&response.Recording.RawSourceFile, &response.Recording.DecoderProfileID,
+		&response.Recording.RawSourceFile, &response.Recording.RecorderContainerFormat,
+		&response.Recording.RecorderAdapter, &response.Recording.DecoderProfileID,
 		&response.Recording.DecoderProfileVersion, &response.Recording.DecoderProfileChecksum,
 		&response.Recording.UploaderName, &response.Recording.UploaderEmail,
 		&createdAt, &updatedAt, &companyID,
