@@ -3,8 +3,10 @@ package handlers
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,15 +25,32 @@ type recordingReviewResponse struct {
 }
 
 type reviewedFlightInput struct {
-	ID          string `json:"id" binding:"required"`
-	Name        string `json:"name" binding:"required"`
-	Departure   string `json:"departure"`
-	Destination string `json:"destination"`
-	Pilot       string `json:"pilot"`
-	FlightHours string `json:"flightHours"`
-	StartRow    int    `json:"startRow" binding:"required,min=1"`
-	EndRow      int    `json:"endRow" binding:"required,min=1"`
+	ID               string   `json:"id" binding:"required"`
+	Name             string   `json:"name" binding:"required"`
+	FlightDate       string   `json:"flightDate"`
+	FlightNumber     string   `json:"flightNumber"`
+	Departure        string   `json:"departure"`
+	Destination      string   `json:"destination"`
+	Pilot            string   `json:"pilot"`
+	PICCrewCode      string   `json:"picCrewCode"`
+	FOCrewCode       string   `json:"foCrewCode"`
+	TechLogReference string   `json:"techLogReference"`
+	LoadSheetNumber  string   `json:"loadSheetNumber"`
+	TakeoffWeight    *float64 `json:"takeoffWeight"`
+	LandingWeight    *float64 `json:"landingWeight"`
+	WeightUnit       string   `json:"weightUnit"`
+	V1               *float64 `json:"v1"`
+	VR               *float64 `json:"vr"`
+	V2               *float64 `json:"v2"`
+	VRef             *float64 `json:"vref"`
+	VApp             *float64 `json:"vapp"`
+	Notes            string   `json:"notes"`
+	FlightHours      string   `json:"flightHours"`
+	StartRow         int      `json:"startRow" binding:"required,min=1"`
+	EndRow           int      `json:"endRow" binding:"required,min=1"`
 }
+
+var icaoCodePattern = regexp.MustCompile(`^[A-Z]{4}$`)
 
 type updateRecordingFlightsRequest struct {
 	Flights []reviewedFlightInput `json:"flights" binding:"required,min=1,dive"`
@@ -101,6 +120,10 @@ func (h *CSVHandler) UpdateRecordingFlights(c *gin.Context) {
 			return
 		}
 		seen[item.ID] = true
+		if err := normalizeReviewedFlightDetails(item); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Flight " + strconv.Itoa(index+1) + ": " + err.Error()})
+			return
+		}
 		if strings.TrimSpace(item.FlightHours) != "" {
 			hours, parseErr := strconv.ParseFloat(strings.TrimSpace(item.FlightHours), 64)
 			if parseErr != nil || hours < 0 {
@@ -142,11 +165,19 @@ func (h *CSVHandler) UpdateRecordingFlights(c *gin.Context) {
 			boundarySource = "manual"
 			changedBoundaries = append(changedBoundaries, item.ID)
 		}
-		_, err = tx.Exec(`UPDATE FlightLeg SET name = ?, departure = ?, destination = ?,
-			pilot = ?, flightHours = ?, startRow = ?, endRow = ?, legIndex = ?,
+		_, err = tx.Exec(`UPDATE FlightLeg SET name = ?, flightDate = ?, flightNumber = ?,
+			departure = ?, destination = ?, pilot = ?, picCrewCode = ?, foCrewCode = ?,
+			techLogReference = ?, loadSheetNumber = ?, takeoffWeight = ?, landingWeight = ?, weightUnit = ?,
+			v1 = ?, vr = ?, v2 = ?, vref = ?, vapp = ?, notes = ?,
+			flightHours = ?, startRow = ?, endRow = ?, legIndex = ?,
 			boundarySource = ?, status = ?, analysisSummary = ?, updatedAt = ?
-			WHERE id = ? AND recordingId = ?`, item.Name, nullableReviewedText(item.Departure),
-			nullableReviewedText(item.Destination), nullableReviewedText(item.Pilot),
+			WHERE id = ? AND recordingId = ?`, item.Name, nullableReviewedText(item.FlightDate),
+			nullableReviewedText(item.FlightNumber), nullableReviewedText(item.Departure),
+			nullableReviewedText(item.Destination), nullableReviewedText(item.PICCrewCode),
+			nullableReviewedText(item.PICCrewCode), nullableReviewedText(item.FOCrewCode),
+			nullableReviewedText(item.TechLogReference), nullableReviewedText(item.LoadSheetNumber),
+			item.TakeoffWeight, item.LandingWeight, nullableReviewedText(item.WeightUnit),
+			item.V1, item.VR, item.V2, item.VRef, item.VApp, nullableReviewedText(item.Notes),
 			nullableReviewedText(item.FlightHours), item.StartRow, item.EndRow, index+1,
 			boundarySource, status, analysisSummary, now, item.ID, review.Recording.ID)
 		if err != nil {
@@ -307,7 +338,9 @@ func (h *CSVHandler) loadRecordingReview(recordingID string) (recordingReviewRes
 	}
 
 	rows, err := h.db.Query(`SELECT id, recordingId, name, aircraftId, legIndex,
-		status, departure, pilot, destination, flightHours, startRow, endRow,
+		status, departure, pilot, destination, flightHours,
+		flightDate, flightNumber, picCrewCode, foCrewCode, techLogReference, loadSheetNumber,
+		takeoffWeight, landingWeight, weightUnit, v1, vr, v2, vref, vapp, notes, startRow, endRow,
 		startSample, endSample, boundarySource, analysisSummary, createdAt, updatedAt
 		FROM FlightLeg WHERE recordingId = ? ORDER BY legIndex, startRow`, recordingID)
 	if err != nil {
@@ -320,7 +353,11 @@ func (h *CSVHandler) loadRecordingReview(recordingID string) (recordingReviewRes
 		var flightCreatedAt, flightUpdatedAt nullableTimestamp
 		if err = rows.Scan(&flight.ID, &flight.RecordingID, &flight.Name, &flight.AircraftID,
 			&flight.LegIndex, &flight.Status, &flight.Departure, &flight.Pilot,
-			&flight.Destination, &flight.FlightHours, &flight.StartRow, &flight.EndRow,
+			&flight.Destination, &flight.FlightHours, &flight.FlightDate, &flight.FlightNumber,
+			&flight.PICCrewCode, &flight.FOCrewCode, &flight.TechLogReference, &flight.LoadSheetNumber,
+			&flight.TakeoffWeight, &flight.LandingWeight, &flight.WeightUnit,
+			&flight.V1, &flight.VR, &flight.V2, &flight.VRef, &flight.VApp, &flight.Notes,
+			&flight.StartRow, &flight.EndRow,
 			&flight.StartSample, &flight.EndSample, &flight.BoundarySource,
 			&flight.AnalysisSummary, &flightCreatedAt, &flightUpdatedAt); err != nil {
 			return response, "", err
@@ -358,6 +395,66 @@ func nullableReviewedText(value string) any {
 		return nil
 	}
 	return value
+}
+
+func normalizeReviewedFlightDetails(item *reviewedFlightInput) error {
+	item.FlightDate = strings.TrimSpace(item.FlightDate)
+	if item.FlightDate != "" {
+		if _, err := time.Parse("2006-01-02", item.FlightDate); err != nil {
+			return errors.New("date must use YYYY-MM-DD")
+		}
+	}
+	item.FlightNumber = strings.ToUpper(strings.TrimSpace(item.FlightNumber))
+	item.Departure = strings.ToUpper(strings.TrimSpace(item.Departure))
+	item.Destination = strings.ToUpper(strings.TrimSpace(item.Destination))
+	for label, value := range map[string]string{"departure ICAO": item.Departure, "destination ICAO": item.Destination} {
+		if value != "" && !icaoCodePattern.MatchString(value) {
+			return fmt.Errorf("%s must contain exactly four letters", label)
+		}
+	}
+	item.PICCrewCode = strings.ToUpper(strings.TrimSpace(item.PICCrewCode))
+	if item.PICCrewCode == "" {
+		item.PICCrewCode = strings.ToUpper(strings.TrimSpace(item.Pilot))
+	}
+	item.Pilot = item.PICCrewCode
+	item.FOCrewCode = strings.ToUpper(strings.TrimSpace(item.FOCrewCode))
+	item.TechLogReference = strings.TrimSpace(item.TechLogReference)
+	item.LoadSheetNumber = strings.TrimSpace(item.LoadSheetNumber)
+	item.Notes = strings.TrimSpace(item.Notes)
+	item.WeightUnit = strings.ToLower(strings.TrimSpace(item.WeightUnit))
+	if item.WeightUnit == "" && (item.TakeoffWeight != nil || item.LandingWeight != nil) {
+		item.WeightUnit = "kg"
+	}
+	if item.WeightUnit != "" && item.WeightUnit != "kg" && item.WeightUnit != "lb" {
+		return errors.New("weight unit must be kg or lb")
+	}
+	for label, value := range map[string]*float64{
+		"take-off weight": item.TakeoffWeight, "landing weight": item.LandingWeight,
+	} {
+		if value != nil && (*value < 0 || *value > 10_000_000) {
+			return fmt.Errorf("%s is outside the supported range", label)
+		}
+	}
+	for label, value := range map[string]*float64{
+		"V1": item.V1, "VR": item.VR, "V2": item.V2, "Vref": item.VRef, "Vapp": item.VApp,
+	} {
+		if value != nil && (*value < 0 || *value > 1000) {
+			return fmt.Errorf("%s must be between 0 and 1,000 kt", label)
+		}
+	}
+	for label, value := range map[string]string{
+		"flight number": item.FlightNumber, "PIC crew code": item.PICCrewCode,
+		"FO crew code": item.FOCrewCode, "DFR / tech log": item.TechLogReference,
+		"load sheet number": item.LoadSheetNumber,
+	} {
+		if len(value) > 64 {
+			return fmt.Errorf("%s must not exceed 64 characters", label)
+		}
+	}
+	if len(item.Notes) > 2000 {
+		return errors.New("notes must not exceed 2,000 characters")
+	}
+	return nil
 }
 
 func valueOrDefaultString(value *string, fallback string) string {

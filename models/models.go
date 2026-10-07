@@ -123,6 +123,21 @@ type FlightLeg struct {
 	Pilot                *string   `json:"pilot" db:"pilot"`
 	Destination          *string   `json:"destination" db:"destination"`
 	FlightHours          *string   `json:"flightHours" db:"flightHours"`
+	FlightDate           *string   `json:"flightDate,omitempty" db:"flightDate"`
+	FlightNumber         *string   `json:"flightNumber,omitempty" db:"flightNumber"`
+	PICCrewCode          *string   `json:"picCrewCode,omitempty" db:"picCrewCode"`
+	FOCrewCode           *string   `json:"foCrewCode,omitempty" db:"foCrewCode"`
+	TechLogReference     *string   `json:"techLogReference,omitempty" db:"techLogReference"`
+	LoadSheetNumber      *string   `json:"loadSheetNumber,omitempty" db:"loadSheetNumber"`
+	TakeoffWeight        *float64  `json:"takeoffWeight,omitempty" db:"takeoffWeight"`
+	LandingWeight        *float64  `json:"landingWeight,omitempty" db:"landingWeight"`
+	WeightUnit           *string   `json:"weightUnit,omitempty" db:"weightUnit"`
+	V1                   *float64  `json:"v1,omitempty" db:"v1"`
+	VR                   *float64  `json:"vr,omitempty" db:"vr"`
+	V2                   *float64  `json:"v2,omitempty" db:"v2"`
+	VRef                 *float64  `json:"vref,omitempty" db:"vref"`
+	VApp                 *float64  `json:"vapp,omitempty" db:"vapp"`
+	Notes                *string   `json:"notes,omitempty" db:"notes"`
 	StartRow             int       `json:"startRow" db:"startRow"`
 	EndRow               *int      `json:"endRow,omitempty" db:"endRow"`
 	StartSample          *string   `json:"startSample,omitempty" db:"startSample"`
