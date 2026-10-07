@@ -16,6 +16,30 @@ func TestNormalizeCSVDirect(t *testing.T) {
 	assertNormalized(t, []byte(sampleCSV), "flight.csv", FormatCSV, "")
 }
 
+func TestNormalizeCSVAcceptsGarminMetadataPreamble(t *testing.T) {
+	source := []byte(`#airframe_info, log_version="1.03", Product="GIFD", airframe_name="Cessna 208B",
+#yyy-mm-dd, hh:mm:ss, ft, kt
+Lcl Date,Lcl Time,AltInd,IAS
+2026-07-11,06:36:52,5150.2,0.00
+`)
+	destination := filepath.Join(t.TempDir(), "normalized.csv")
+
+	result, err := NormalizeCSV(bytes.NewReader(source), int64(len(source)), "garmin.csv", destination)
+	if err != nil {
+		t.Fatalf("normalize Garmin CSV: %v", err)
+	}
+	if result.SourceFormat != FormatCSV || result.NormalizedBytes != int64(len(source)) {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	content, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(content, source) {
+		t.Fatal("Garmin metadata preamble was not preserved")
+	}
+}
+
 func TestNormalizeCSVGZIP(t *testing.T) {
 	var compressed bytes.Buffer
 	writer := gzip.NewWriter(&compressed)

@@ -170,17 +170,49 @@ func validateCSV(path string) error {
 	}
 	defer file.Close()
 
-	reader := csv.NewReader(bufio.NewReader(file))
+	// Garmin and other avionics loggers commonly prefix their CSV data with
+	// comment metadata. Those lines may contain key="value" pairs which are
+	// intentionally not RFC 4180 records, so locate and validate the first real
+	// header/data rows instead of feeding the preamble to encoding/csv.
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	headerFound := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		record, parseErr := parseCSVValidationLine(line)
+		if parseErr != nil {
+			if !headerFound {
+				return fmt.Errorf("recording has no readable CSV header: %w", parseErr)
+			}
+			return fmt.Errorf("recording CSV has no readable data row: %w", parseErr)
+		}
+		if len(record) < 2 {
+			if !headerFound {
+				return errors.New("recording CSV must contain at least two columns")
+			}
+			continue
+		}
+		if !headerFound {
+			headerFound = true
+			continue
+		}
+		return nil
+	}
+	if err = scanner.Err(); err != nil {
+		return fmt.Errorf("read normalized CSV: %w", err)
+	}
+	if !headerFound {
+		return errors.New("recording has no readable CSV header")
+	}
+	return errors.New("recording CSV has no readable data row")
+}
+
+func parseCSVValidationLine(line string) ([]string, error) {
+	reader := csv.NewReader(strings.NewReader(line))
 	reader.FieldsPerRecord = -1
-	header, err := reader.Read()
-	if err != nil {
-		return fmt.Errorf("recording has no readable CSV header: %w", err)
-	}
-	if len(header) < 2 {
-		return errors.New("recording CSV must contain at least two columns")
-	}
-	if _, err = reader.Read(); err != nil {
-		return fmt.Errorf("recording CSV has no readable data row: %w", err)
-	}
-	return nil
+
+	return reader.Read()
 }
