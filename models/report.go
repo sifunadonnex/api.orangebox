@@ -65,6 +65,88 @@ type ReportOverviewResponse struct {
 	Severity SeverityReportOverview `json:"severity"`
 }
 
+// Programme reporting deliberately counts only analyst-validated occurrences.
+// Review queue and false-event totals are returned separately so provisional
+// detections never inflate an operator's safety rates.
+type ProgrammeMonth struct {
+	Month                   string  `json:"month"`
+	Flights                 int     `json:"flights"`
+	Occurrences             int     `json:"occurrences"`
+	HighCritical            int     `json:"highCritical"`
+	EventRatePer100Flights  float64 `json:"eventRatePer100Flights"`
+	HighCriticalRatePer1000 float64 `json:"highCriticalRatePer1000Flights"`
+}
+
+type ProgrammeSummary struct {
+	Flights                 int     `json:"flights"`
+	Occurrences             int     `json:"occurrences"`
+	HighCritical            int     `json:"highCritical"`
+	EventRatePer100Flights  float64 `json:"eventRatePer100Flights"`
+	HighCriticalRatePer1000 float64 `json:"highCriticalRatePer1000Flights"`
+	PendingReview           int     `json:"pendingReview"`
+	UnderReview             int     `json:"underReview"`
+	FalseOccurrences        int     `json:"falseOccurrences"`
+}
+
+type ProgrammeEvent struct {
+	Key               string  `json:"key"`
+	Label             string  `json:"label"`
+	Low               int     `json:"low"`
+	Medium            int     `json:"medium"`
+	High              int     `json:"high"`
+	Critical          int     `json:"critical"`
+	Other             int     `json:"other"`
+	Total             int     `json:"total"`
+	RatePer100Flights float64 `json:"ratePer100Flights"`
+}
+
+type ProgrammeAircraft struct {
+	AircraftID        string  `json:"aircraftId"`
+	Registration      string  `json:"registration"`
+	Flights           int     `json:"flights"`
+	Occurrences       int     `json:"occurrences"`
+	HighCritical      int     `json:"highCritical"`
+	RatePer100Flights float64 `json:"ratePer100Flights"`
+}
+
+type ProgrammePriorityOccurrence struct {
+	OccurrenceID string   `json:"occurrenceId"`
+	FlightID     string   `json:"flightId"`
+	FlightName   string   `json:"flightName"`
+	AircraftID   string   `json:"aircraftId"`
+	Registration string   `json:"registration"`
+	EventLabel   string   `json:"eventLabel"`
+	Level        string   `json:"level"`
+	Phase        string   `json:"phase"`
+	Parameter    string   `json:"parameter"`
+	PeakValue    *float64 `json:"peakValue,omitempty"`
+	OccurredAt   int64    `json:"occurredAt"`
+}
+
+type SafetyIndicatorTarget struct {
+	Key    string   `json:"key"`
+	Target *float64 `json:"target,omitempty"`
+	Alert  *float64 `json:"alert,omitempty"`
+}
+
+type ProgrammeReportResponse struct {
+	Scope        ReportScopeResponse           `json:"scope"`
+	Filters      ReportFilters                 `json:"filters"`
+	Summary      ProgrammeSummary              `json:"summary"`
+	Months       []ProgrammeMonth              `json:"months"`
+	Events       []ProgrammeEvent              `json:"events"`
+	Aircraft     []ProgrammeAircraft           `json:"aircraft"`
+	Priority     []ProgrammePriorityOccurrence `json:"priorityOccurrences"`
+	Targets      []SafetyIndicatorTarget       `json:"targets"`
+	StatusPolicy string                        `json:"statusPolicy"`
+	AsOf         string                        `json:"asOf"`
+}
+
+type UpdateSafetyIndicatorTargetsRequest struct {
+	CompanyID string                  `json:"companyId" binding:"required"`
+	Targets   []SafetyIndicatorTarget `json:"targets" binding:"required"`
+}
+
 type EventReportPoint struct {
 	Key             string  `json:"key"`
 	Label           string  `json:"label"`

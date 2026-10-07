@@ -42,7 +42,7 @@ func accessFilter(c *gin.Context) (string, []interface{}, bool) {
 
 func isValidExceedanceStatus(status string) bool {
 	switch status {
-	case models.ExceedanceStatusPending, models.ExceedanceStatusValid, models.ExceedanceStatusNuisance, models.ExceedanceStatusFalse:
+	case models.ExceedanceStatusPending, models.ExceedanceStatusUnderReview, models.ExceedanceStatusValid, models.ExceedanceStatusNuisance, models.ExceedanceStatusFalse:
 		return true
 	default:
 		return false
@@ -539,6 +539,7 @@ func (h *ExceedanceHandler) UpdateExceedance(c *gin.Context) {
 	if !isValidExceedanceStatus(req.EventStatus) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid exceedance status", "allowed": []string{
 			models.ExceedanceStatusPending,
+			models.ExceedanceStatusUnderReview,
 			models.ExceedanceStatusValid,
 			models.ExceedanceStatusNuisance,
 			models.ExceedanceStatusFalse,

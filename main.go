@@ -211,6 +211,8 @@ func main() {
 		{
 			reports.GET("/options", middleware.AnyAuthenticatedUser(), reportHandler.GetOptions)
 			reports.GET("/overview", middleware.AnyAuthenticatedUser(), reportHandler.GetOverview)
+			reports.GET("/programme", middleware.AnyAuthenticatedUser(), reportHandler.GetProgrammeReport)
+			reports.PUT("/programme/targets", middleware.AdminOrFDA(), reportHandler.UpdateProgrammeTargets)
 			reports.GET("/events/aggregate", middleware.AnyAuthenticatedUser(), reportHandler.GetEventAggregate)
 			reports.GET("/events/comparison", middleware.AnyAuthenticatedUser(), reportHandler.GetEventComparison)
 			reports.GET("/events/benchmark", middleware.AnyAuthenticatedUser(), reportHandler.GetEventBenchmark)

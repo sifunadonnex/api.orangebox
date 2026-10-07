@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -32,6 +33,7 @@ func reportTestDB(t *testing.T) *sql.DB {
 		`CREATE TABLE DetectionRunDefinition (detectionRunId TEXT NOT NULL, definitionId TEXT NOT NULL, status TEXT NOT NULL, isCurrent INTEGER NOT NULL)`,
 		`CREATE TABLE Exceedance (id TEXT PRIMARY KEY, flightId TEXT NOT NULL, flightLegId TEXT, aircraftId TEXT NOT NULL, flightPhase TEXT NOT NULL, parameterName TEXT, eventStatus TEXT NOT NULL, exceedanceLevel TEXT, eventId TEXT, isCurrent INTEGER NOT NULL, peakValue REAL, exceedanceValues TEXT, createdAt INTEGER)`,
 		`CREATE TABLE ExceedanceLocation (exceedanceId TEXT PRIMARY KEY, latitude REAL NOT NULL, longitude REAL NOT NULL, altitude REAL, matchedTimeMs INTEGER NOT NULL, timeDeltaMs INTEGER NOT NULL, source TEXT NOT NULL, quality TEXT NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL)`,
+		`CREATE TABLE SafetyIndicatorTarget (id TEXT PRIMARY KEY, companyId TEXT NOT NULL, indicatorKey TEXT NOT NULL, target REAL, alert REAL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, UNIQUE(companyId, indicatorKey))`,
 		`INSERT INTO Company VALUES ('company-a', 'Alpha Air', 'active'), ('company-b', 'Bravo Air', 'active')`,
 		`INSERT INTO Aircraft VALUES
 			('aircraft-a', '5H-AAA', 'SN-A', 'Boeing', '737', 'company-a'),
@@ -112,6 +114,71 @@ func TestReportTenantCannotSelectAnotherCompany(t *testing.T) {
 	handler.GetOptions(ctx)
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestProgrammeReportExcludesUnvalidatedAndFalseOccurrencesFromRates(t *testing.T) {
+	db := reportTestDB(t)
+	if _, err := db.Exec(`INSERT INTO Exceedance VALUES
+		('event-a-review', 'flight-a', 'flight-a', 'aircraft-a', 'APPROACH', 'ROLL', 'Under Review', 'Medium', 'version-2', 1, 12, '{"unit":"deg"}', 1),
+		('event-a-false', 'flight-a', 'flight-a', 'aircraft-a', 'LANDING', 'VSI', 'False', 'Critical', 'version-2', 1, 2200, '{"unit":"ft/min"}', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO SafetyIndicatorTarget VALUES ('target-1', 'company-a', 'event_rate', 2.5, 5, 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewReportHandler(db)
+	ctx, recorder := reportContext(http.MethodGet, "/api/reports/programme?from=2026-09-01&to=2026-09-30", models.RoleUser, "company-a")
+	handler.GetProgrammeReport(ctx)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var response models.ProgrammeReportResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Summary.Flights != 1 || response.Summary.Occurrences != 1 || response.Summary.HighCritical != 1 {
+		t.Fatalf("programme rates included an unvalidated or false occurrence: %+v", response.Summary)
+	}
+	if response.Summary.PendingReview != 1 || response.Summary.UnderReview != 1 || response.Summary.FalseOccurrences != 1 {
+		t.Fatalf("unexpected review workload: %+v", response.Summary)
+	}
+	if len(response.Months) != 1 || response.Months[0].Occurrences != 1 || len(response.Targets) != 1 {
+		t.Fatalf("unexpected programme detail: months=%+v targets=%+v", response.Months, response.Targets)
+	}
+}
+
+func TestProgrammeTargetsRequireOversightRoleAndStayCompanyScoped(t *testing.T) {
+	db := reportTestDB(t)
+	handler := NewReportHandler(db)
+	body := []byte(`{"companyId":"company-a","targets":[{"key":"event_rate","target":3,"alert":5}]}`)
+
+	userContext, userRecorder := reportContext(http.MethodPut, "/api/reports/programme/targets", models.RoleUser, "company-a")
+	userContext.Request = httptest.NewRequest(http.MethodPut, "/api/reports/programme/targets", bytes.NewReader(body))
+	userContext.Request.Header.Set("Content-Type", "application/json")
+	handler.UpdateProgrammeTargets(userContext)
+	if userRecorder.Code != http.StatusForbidden {
+		t.Fatalf("expected tenant write to be forbidden, got %d: %s", userRecorder.Code, userRecorder.Body.String())
+	}
+
+	adminContext, adminRecorder := reportContext(http.MethodPut, "/api/reports/programme/targets", models.RoleAdmin, "")
+	adminContext.Request = httptest.NewRequest(http.MethodPut, "/api/reports/programme/targets", bytes.NewReader(body))
+	adminContext.Request.Header.Set("Content-Type", "application/json")
+	handler.UpdateProgrammeTargets(adminContext)
+	if adminRecorder.Code != http.StatusOK {
+		t.Fatalf("expected admin update to succeed, got %d: %s", adminRecorder.Code, adminRecorder.Body.String())
+	}
+
+	var companyA, companyB int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM SafetyIndicatorTarget WHERE companyId = 'company-a' AND indicatorKey = 'event_rate'`).Scan(&companyA); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM SafetyIndicatorTarget WHERE companyId = 'company-b'`).Scan(&companyB); err != nil {
+		t.Fatal(err)
+	}
+	if companyA != 1 || companyB != 0 {
+		t.Fatalf("target update escaped company scope: company-a=%d company-b=%d", companyA, companyB)
 	}
 }
 

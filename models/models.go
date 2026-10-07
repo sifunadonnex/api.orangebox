@@ -215,10 +215,11 @@ type Exceedance struct {
 }
 
 const (
-	ExceedanceStatusPending  = "Pending"
-	ExceedanceStatusValid    = "Valid"
-	ExceedanceStatusNuisance = "Nuisance"
-	ExceedanceStatusFalse    = "False"
+	ExceedanceStatusPending     = "Pending"
+	ExceedanceStatusUnderReview = "Under Review"
+	ExceedanceStatusValid       = "Valid"
+	ExceedanceStatusNuisance    = "Nuisance"
+	ExceedanceStatusFalse       = "False"
 )
 
 // ExceedanceReview is an append-only audit entry for an occurrence review.

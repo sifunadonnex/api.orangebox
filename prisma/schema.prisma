@@ -29,6 +29,21 @@ model Company {
   aircraft          Aircraft[]
   eventDefinitions  EventDefinition[]
   eventAssignments  EventDefinitionAssignment[]
+  safetyIndicatorTargets SafetyIndicatorTarget[]
+}
+
+model SafetyIndicatorTarget {
+  id           String   @id @default(cuid())
+  companyId    String
+  indicatorKey String
+  target       Float?
+  alert        Float?
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([companyId, indicatorKey])
+  @@index([companyId])
 }
 
 model Subscription {
