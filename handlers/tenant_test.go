@@ -102,7 +102,21 @@ func TestAdminCanDeleteAircraftAcrossCompanies(t *testing.T) {
 	ctx.Params = gin.Params{{Key: "id", Value: "aircraft-b"}}
 	handler.DeleteAircraft(ctx)
 	if recorder.Code != http.StatusOK {
-		t.Fatalf("expected global admin delete to succeed, got %d", recorder.Code)
+		t.Fatalf("expected global admin delete to succeed, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	for _, table := range []string{"Aircraft", "FlightLeg", "Exceedance"} {
+		var count int
+		query := `SELECT COUNT(1) FROM ` + table + ` WHERE aircraftId = 'aircraft-b'`
+		if table == "Aircraft" {
+			query = `SELECT COUNT(1) FROM Aircraft WHERE id = 'aircraft-b'`
+		}
+		if err := db.QueryRow(query).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("dependent %s records were not deleted: count=%d err=%v", table, count, err)
+		}
+	}
+	var otherAircraftCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM Aircraft WHERE id = 'aircraft-a'`).Scan(&otherAircraftCount); err != nil || otherAircraftCount != 1 {
+		t.Fatalf("unrelated aircraft was changed: count=%d err=%v", otherAircraftCount, err)
 	}
 }
 

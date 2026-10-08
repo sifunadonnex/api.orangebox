@@ -2,8 +2,11 @@ package handlers
 
 import (
 	"database/sql"
+	"errors"
 	"fdm-backend/models"
+	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -83,7 +86,7 @@ func (h *AircraftHandler) GetAircrafts(c *gin.Context) {
 		}
 
 		// Get related CSV files
-		csvs, err := h.getAircraftCSVs(aircraft.ID)
+		csvs, err := h.getAircraftCSVs(aircraft.ID, hasGlobalCompanyAccess(c))
 		if err != nil {
 			println("Error getting CSVs for aircraft", aircraft.ID, ":", err.Error())
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error getting CSV files", "details": err.Error()})
@@ -99,7 +102,7 @@ func (h *AircraftHandler) GetAircrafts(c *gin.Context) {
 		}
 
 		// Get related exceedances
-		exceedances, err := h.getAircraftExceedances(aircraft.ID)
+		exceedances, err := h.getAircraftExceedances(aircraft.ID, hasGlobalCompanyAccess(c))
 		if err != nil {
 			println("Error getting exceedances for aircraft", aircraft.ID, ":", err.Error())
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error getting exceedances", "details": err.Error()})
@@ -184,13 +187,13 @@ func (h *AircraftHandler) GetAircraftByID(c *gin.Context) {
 	company, _ := h.getAircraftCompany(aircraft.CompanyID)
 
 	// Get related CSV files
-	csvs, _ := h.getAircraftCSVs(aircraft.ID)
+	csvs, _ := h.getAircraftCSVs(aircraft.ID, hasGlobalCompanyAccess(c))
 
 	// Get related event logs
 	eventLogs, _ := h.getAircraftEventLogs(aircraft.ID)
 
 	// Get related exceedances
-	exceedances, _ := h.getAircraftExceedances(aircraft.ID)
+	exceedances, _ := h.getAircraftExceedances(aircraft.ID, hasGlobalCompanyAccess(c))
 
 	aircraftWithRelations := struct {
 		models.Aircraft
@@ -270,13 +273,13 @@ func (h *AircraftHandler) GetAircraftsByUserID(c *gin.Context) {
 		company, _ := h.getAircraftCompany(aircraft.CompanyID)
 
 		// Get related CSV files
-		csvs, _ := h.getAircraftCSVs(aircraft.ID)
+		csvs, _ := h.getAircraftCSVs(aircraft.ID, hasGlobalCompanyAccess(c))
 
 		// Get related event logs
 		eventLogs, _ := h.getAircraftEventLogs(aircraft.ID)
 
 		// Get related exceedances
-		exceedances, _ := h.getAircraftExceedances(aircraft.ID)
+		exceedances, _ := h.getAircraftExceedances(aircraft.ID, hasGlobalCompanyAccess(c))
 
 		aircraftWithRelations := struct {
 			models.Aircraft
@@ -418,34 +421,266 @@ func (h *AircraftHandler) UpdateAircraft(c *gin.Context) {
 // DeleteAircraft deletes an aircraft
 func (h *AircraftHandler) DeleteAircraft(c *gin.Context) {
 	id := c.Param("id")
-	query := `DELETE FROM Aircraft WHERE id = ?`
+	lookupQuery := `SELECT id FROM Aircraft WHERE id = ?`
 	args := []interface{}{id}
 	if !hasGlobalCompanyAccess(c) {
 		companyID, ok := requireTenantCompany(c)
 		if !ok {
 			return
 		}
-		query += " AND companyId = ?"
+		lookupQuery += " AND companyId = ?"
 		args = append(args, companyID)
 	}
-	result, err := h.db.Exec(query, args...)
+	if err := h.db.QueryRowContext(c.Request.Context(), lookupQuery, args...).Scan(&id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Aircraft not found"})
+			return
+		}
+		respondDatabaseError(c, err)
+		return
+	}
+
+	tx, err := h.db.BeginTx(c.Request.Context(), nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error deleting aircraft"})
+		respondDatabaseError(c, err)
 		return
 	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
 
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Aircraft not found"})
+	counts, files, err := collectAircraftDeletionData(tx, id)
+	if err != nil {
+		respondDatabaseError(c, err)
 		return
 	}
+	if err = deleteAircraftDependencies(tx, id); err != nil {
+		respondDatabaseError(c, err)
+		return
+	}
+	result, err := tx.ExecContext(c.Request.Context(), `DELETE FROM Aircraft WHERE id = ?`, id)
+	if err != nil {
+		respondDatabaseError(c, err)
+		return
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		respondDatabaseError(c, err)
+		return
+	}
+	if rowsAffected != 1 {
+		c.JSON(http.StatusConflict, gin.H{"error": "Aircraft deletion did not complete"})
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		respondDatabaseError(c, err)
+		return
+	}
+	committed = true
 
-	c.JSON(http.StatusOK, gin.H{"message": "Aircraft deleted successfully"})
+	filesDeleted, fileWarning := removeAircraftStoredFiles(files)
+	c.JSON(http.StatusOK, gin.H{
+		"success":      true,
+		"message":      "Aircraft and all related flight data were deleted",
+		"deleted":      counts,
+		"filesDeleted": filesDeleted,
+		"warning":      fileWarning,
+	})
+}
+
+type aircraftDeletionCounts struct {
+	Recordings          int64 `json:"recordings"`
+	Flights             int64 `json:"flights"`
+	Exceedances         int64 `json:"exceedances"`
+	DetectionRuns       int64 `json:"detectionRuns"`
+	EventConfigurations int64 `json:"eventConfigurations"`
+}
+
+type aircraftStoredFile struct {
+	CSV string
+	Raw sql.NullString
+}
+
+func collectAircraftDeletionData(tx *sql.Tx, aircraftID string) (aircraftDeletionCounts, []aircraftStoredFile, error) {
+	var counts aircraftDeletionCounts
+	var err error
+	if counts.Recordings, err = countAircraftRows(tx, "Csv", "aircraftId", aircraftID); err != nil {
+		return counts, nil, err
+	}
+	flightLegs, err := countAircraftRows(tx, "FlightLeg", "aircraftId", aircraftID)
+	if err != nil {
+		return counts, nil, err
+	}
+	legacyFlights, err := countAircraftRows(tx, "Flight", "aircraftId", aircraftID)
+	if err != nil {
+		return counts, nil, err
+	}
+	counts.Flights = flightLegs + legacyFlights
+	if counts.Exceedances, err = countAircraftRows(tx, "Exceedance", "aircraftId", aircraftID); err != nil {
+		return counts, nil, err
+	}
+	if counts.DetectionRuns, err = countAircraftRows(tx, "DetectionRun", "aircraftId", aircraftID); err != nil {
+		return counts, nil, err
+	}
+	eventLogs, err := countAircraftRows(tx, "EventLog", "aircraftId", aircraftID)
+	if err != nil {
+		return counts, nil, err
+	}
+	assignments, err := countAircraftRows(tx, "EventDefinitionAssignment", "aircraftId", aircraftID)
+	if err != nil {
+		return counts, nil, err
+	}
+	counts.EventConfigurations = eventLogs + assignments
+
+	csvExists, err := tableExistsTx(tx, "Csv")
+	if err != nil || !csvExists {
+		return counts, nil, err
+	}
+	rawColumnExists, err := columnExistsTx(tx, "Csv", "rawSourceFile")
+	if err != nil {
+		return counts, nil, err
+	}
+	rawColumn := "NULL"
+	if rawColumnExists {
+		rawColumn = "rawSourceFile"
+	}
+	rows, err := tx.Query(fmt.Sprintf(`SELECT file, %s FROM Csv WHERE aircraftId = ?`, rawColumn), aircraftID)
+	if err != nil {
+		return counts, nil, err
+	}
+	defer rows.Close()
+	files := make([]aircraftStoredFile, 0, counts.Recordings)
+	for rows.Next() {
+		var file aircraftStoredFile
+		if err = rows.Scan(&file.CSV, &file.Raw); err != nil {
+			return counts, nil, err
+		}
+		files = append(files, file)
+	}
+	return counts, files, rows.Err()
+}
+
+func deleteAircraftDependencies(tx *sql.Tx, aircraftID string) error {
+	// Delete restrictive children first. Cascades then remove notifications,
+	// reviews, locations, run definitions, and phase rows owned by those records.
+	for _, target := range []struct {
+		table  string
+		column string
+	}{
+		{"Exceedance", "aircraftId"},
+		{"DetectionRun", "aircraftId"},
+		{"FlightLeg", "aircraftId"},
+		{"Csv", "aircraftId"},
+		{"Flight", "aircraftId"},
+		{"EventLog", "aircraftId"},
+		{"EventDefinitionAssignment", "aircraftId"},
+		{"AircraftDecoderProfile", "aircraftId"},
+	} {
+		if _, err := deleteAircraftRows(tx, target.table, target.column, aircraftID); err != nil {
+			return fmt.Errorf("delete %s records: %w", target.table, err)
+		}
+	}
+
+	versionTableExists, err := tableExistsTx(tx, "EventDefinitionVersion")
+	if err != nil {
+		return err
+	}
+	if versionTableExists {
+		if _, err = tx.Exec(`UPDATE EventDefinitionVersion SET primaryAircraftId = NULL WHERE primaryAircraftId = ?`, aircraftID); err != nil {
+			return fmt.Errorf("clear event definition aircraft reference: %w", err)
+		}
+	}
+	return nil
+}
+
+func countAircraftRows(tx *sql.Tx, table, column, aircraftID string) (int64, error) {
+	exists, err := tableExistsTx(tx, table)
+	if err != nil || !exists {
+		return 0, err
+	}
+	var count int64
+	if err = tx.QueryRow(fmt.Sprintf(`SELECT COUNT(1) FROM %s WHERE %s = ?`, table, column), aircraftID).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func deleteAircraftRows(tx *sql.Tx, table, column, aircraftID string) (int64, error) {
+	exists, err := tableExistsTx(tx, table)
+	if err != nil || !exists {
+		return 0, err
+	}
+	result, err := tx.Exec(fmt.Sprintf(`DELETE FROM %s WHERE %s = ?`, table, column), aircraftID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func tableExistsTx(tx *sql.Tx, table string) (bool, error) {
+	var exists int
+	err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)`, table).Scan(&exists)
+	return exists == 1, err
+}
+
+func columnExistsTx(tx *sql.Tx, table, column string) (bool, error) {
+	rows, err := tx.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, dataType string
+		var notNull, primaryKey int
+		var defaultValue interface{}
+		if err = rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+func removeAircraftStoredFiles(files []aircraftStoredFile) (int, string) {
+	removed := 0
+	failed := 0
+	for _, file := range files {
+		if path, err := storedCSVPath(file.CSV); err == nil {
+			if err = os.Remove(path); err == nil {
+				removed++
+			} else if !errors.Is(err, os.ErrNotExist) {
+				failed++
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			failed++
+		}
+		if file.Raw.Valid {
+			if path, err := storedRawRecordingPath(file.Raw.String); err == nil {
+				if err = os.Remove(path); err == nil {
+					removed++
+				} else if !errors.Is(err, os.ErrNotExist) {
+					failed++
+				}
+			} else if !errors.Is(err, os.ErrNotExist) {
+				failed++
+			}
+		}
+	}
+	if failed > 0 {
+		return removed, fmt.Sprintf("Database records were deleted, but %d stored file(s) could not be removed", failed)
+	}
+	return removed, ""
 }
 
 // Helper functions
 
-func (h *AircraftHandler) getAircraftCSVs(aircraftID string) ([]models.CSV, error) {
+func (h *AircraftHandler) getAircraftCSVs(aircraftID string, includeUnvalidated bool) ([]models.CSV, error) {
 	query := `SELECT f.id, f.name, c.file, f.status, f.departure, f.pilot,
 		f.destination, f.flightHours, f.aircraftId, c.sampleIntervalMs,
 		f.analysisSummary, f.createdAt, f.updatedAt
@@ -479,6 +714,9 @@ func (h *AircraftHandler) getAircraftCSVs(aircraftID string) ([]models.CSV, erro
 			}
 		}
 
+		if !includeUnvalidated {
+			csv.AnalysisSummary = customerAnalysisSummary(csv.AnalysisSummary)
+		}
 		csvs = append(csvs, csv)
 	}
 
@@ -523,15 +761,18 @@ func (h *AircraftHandler) getAircraftEventLogs(aircraftID string) ([]models.Even
 	return eventLogs, nil
 }
 
-func (h *AircraftHandler) getAircraftExceedances(aircraftID string) ([]models.Exceedance, error) {
-	query := `SELECT id, exceedanceValues, flightPhase, parameterName, description, eventStatus, aircraftId, flightId, file, eventId, comment, exceedanceLevel, createdAt, updatedAt FROM Exceedance WHERE aircraftId = ? AND isCurrent = 1`
+func (h *AircraftHandler) getAircraftExceedances(aircraftID string, includeUnvalidated bool) ([]models.Exceedance, error) {
+	query := `SELECT id, COALESCE(exceedanceValues, ''), COALESCE(flightPhase, ''), COALESCE(parameterName, ''), COALESCE(description, ''), COALESCE(eventStatus, ''), aircraftId, COALESCE(flightLegId, flightId), file, eventId, comment, exceedanceLevel, createdAt, updatedAt FROM Exceedance WHERE aircraftId = ? AND isCurrent = 1`
+	if !includeUnvalidated {
+		query += " AND eventStatus = 'Valid'"
+	}
 	rows, err := h.db.Query(query, aircraftID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var exceedances []models.Exceedance
+	exceedances := make([]models.Exceedance, 0)
 	for rows.Next() {
 		var exceedance models.Exceedance
 		var createdAtStr, updatedAtStr sql.NullString

@@ -110,7 +110,12 @@ func (h *CSVHandler) ReanalyzeCSV(c *gin.Context) {
 	if analysis.Status == "failed" {
 		status = http.StatusUnprocessableEntity
 	}
-	c.JSON(status, gin.H{"success": analysis.Status != "failed", "data": flight, "analysis": analysis})
+	var visibleAnalysis any = analysis
+	if !hasGlobalCompanyAccess(c) {
+		visibleAnalysis = customerAnalysis(analysis)
+		flight.AnalysisSummary = customerAnalysisSummary(flight.AnalysisSummary)
+	}
+	c.JSON(status, gin.H{"success": analysis.Status != "failed", "data": flight, "analysis": visibleAnalysis})
 }
 
 // BackfillEvent analyzes every stored flight covered by the currently
@@ -179,7 +184,11 @@ func (h *CSVHandler) BackfillEvent(c *gin.Context) {
 		}
 		response.OccurrenceCount += analysis.OccurrenceCount
 	}
-	c.JSON(http.StatusOK, gin.H{"success": response.FailedCount == 0, "data": response})
+	var visibleResponse any = response
+	if !hasGlobalCompanyAccess(c) {
+		visibleResponse = customerAnalysis(response)
+	}
+	c.JSON(http.StatusOK, gin.H{"success": response.FailedCount == 0, "data": visibleResponse})
 }
 
 func (h *CSVHandler) getStoredFlight(id string) (models.FlightLeg, models.Aircraft, error) {

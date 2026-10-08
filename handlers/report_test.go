@@ -141,11 +141,19 @@ func TestProgrammeReportExcludesUnvalidatedAndFalseOccurrencesFromRates(t *testi
 	if response.Summary.Flights != 1 || response.Summary.Occurrences != 1 || response.Summary.HighCritical != 1 {
 		t.Fatalf("programme rates included an unvalidated or false occurrence: %+v", response.Summary)
 	}
-	if response.Summary.PendingReview != 1 || response.Summary.UnderReview != 1 || response.Summary.FalseOccurrences != 1 {
-		t.Fatalf("unexpected review workload: %+v", response.Summary)
+	if response.Summary.PendingReview != 0 || response.Summary.UnderReview != 0 || response.Summary.FalseOccurrences != 0 {
+		t.Fatalf("customer programme leaked unvalidated workload: %+v", response.Summary)
 	}
 	if len(response.Months) != 1 || response.Months[0].Occurrences != 1 || len(response.Targets) != 1 {
 		t.Fatalf("unexpected programme detail: months=%+v targets=%+v", response.Months, response.Targets)
+	}
+	adminContext, adminRecorder := reportContext(http.MethodGet, "/api/reports/programme?companyId=company-a&from=2026-09-01&to=2026-09-30", models.RoleAdmin, "")
+	handler.GetProgrammeReport(adminContext)
+	if adminRecorder.Code != http.StatusOK || json.Unmarshal(adminRecorder.Body.Bytes(), &response) != nil {
+		t.Fatal("admin programme failed")
+	}
+	if response.Summary.PendingReview != 1 || response.Summary.UnderReview != 1 || response.Summary.FalseOccurrences != 1 {
+		t.Fatalf("oversight review workload missing: %+v", response.Summary)
 	}
 }
 

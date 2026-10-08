@@ -74,6 +74,12 @@ func (h *CSVHandler) GetRecordingReview(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "You cannot access this recording"})
 		return
 	}
+	if !hasGlobalCompanyAccess(c) {
+		review.Recording.AnalysisSummary = customerAnalysisSummary(review.Recording.AnalysisSummary)
+		for index := range review.Flights {
+			review.Flights[index].AnalysisSummary = customerAnalysisSummary(review.Flights[index].AnalysisSummary)
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": review})
 }
 
@@ -212,6 +218,12 @@ func (h *CSVHandler) UpdateRecordingFlights(c *gin.Context) {
 	if err != nil {
 		respondDatabaseError(c, err)
 		return
+	}
+	if !hasGlobalCompanyAccess(c) {
+		updated.Recording.AnalysisSummary = customerAnalysisSummary(updated.Recording.AnalysisSummary)
+		for index := range updated.Flights {
+			updated.Flights[index].AnalysisSummary = customerAnalysisSummary(updated.Flights[index].AnalysisSummary)
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true, "data": updated, "boundaryChangedFlightIds": changedBoundaries,

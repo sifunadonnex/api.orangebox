@@ -28,7 +28,11 @@ func (h *ReportHandler) GetProgrammeReport(c *gin.Context) {
 	validatedScope.CanViewAllStatus = false
 	flightWhere, flightArgs := reportFlightWhere(validatedScope, filters)
 	validWhere, validArgs := programmeExceedanceWhere(scope, filters, "e.eventStatus = 'Valid'")
-	allWhere, allArgs := programmeExceedanceWhere(scope, filters, "1 = 1")
+	reviewCondition := "1 = 1"
+	if !scope.CanViewAllStatus {
+		reviewCondition = "0 = 1"
+	}
+	allWhere, allArgs := programmeExceedanceWhere(scope, filters, reviewCondition)
 
 	months, err := h.programmeMonths(filters, flightWhere, flightArgs, validWhere, validArgs)
 	if err != nil {

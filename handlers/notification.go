@@ -113,9 +113,19 @@ func (h *NotificationHandler) GetUserNotifications(c *gin.Context) {
 			  FROM Notification n
 			  JOIN Exceedance e ON e.id = n.exceedanceId AND e.isCurrent = 1
 			  WHERE n.userId = ?
-			  ORDER BY n.createdAt DESC`
+			  `
+	args := []any{userID}
+	if !hasGlobalCompanyAccess(c) {
+		companyID, ok := requireTenantCompany(c)
+		if !ok {
+			return
+		}
+		query += " AND e.eventStatus = 'Valid' AND EXISTS (SELECT 1 FROM Aircraft a WHERE a.id = e.aircraftId AND a.companyId = ?)"
+		args = append(args, companyID)
+	}
+	query += " ORDER BY n.createdAt DESC"
 
-	rows, err := h.db.Query(query, userID)
+	rows, err := h.db.Query(query, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return

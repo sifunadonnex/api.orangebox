@@ -347,9 +347,19 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 	recording.AnalysisSummary = stringPointer(string(summaryJSON))
 	_, _ = h.db.Exec(`UPDATE Csv SET status = ?, analysisSummary = ?, updatedAt = ? WHERE id = ?`,
 		aggregate.Status, string(summaryJSON), time.Now().UnixMilli(), recording.ID)
+	var visibleAnalyses any = analyses
+	var visibleAggregate any = aggregate
+	if !hasGlobalCompanyAccess(c) {
+		visibleAnalyses = customerAnalysis(analyses)
+		visibleAggregate = customerAnalysis(aggregate)
+		recording.AnalysisSummary = customerAnalysisSummary(recording.AnalysisSummary)
+		for index := range flights {
+			flights[index].AnalysisSummary = customerAnalysisSummary(flights[index].AnalysisSummary)
+		}
+	}
 	c.JSON(http.StatusCreated, gin.H{
 		"success": true, "data": flights[0], "recording": recording,
-		"flights": flights, "flightCount": len(flights), "analyses": analyses, "analysis": aggregate,
+		"flights": flights, "flightCount": len(flights), "analyses": visibleAnalyses, "analysis": visibleAggregate,
 		"phaseDetection": phaseResponse, "ingestion": ingestionResult, "canonicalConversion": canonicalConversion,
 	})
 }
@@ -557,7 +567,14 @@ func (h *CSVHandler) GetCSVs(c *gin.Context) {
 		}
 
 		// Get related exceedances
-		exceedances, _ := h.getCSVExceedances(flight.ID)
+		exceedances, err := h.getCSVExceedances(flight.ID, hasGlobalCompanyAccess(c))
+		if err != nil {
+			respondDatabaseError(c, err)
+			return
+		}
+		if !hasGlobalCompanyAccess(c) {
+			flight.AnalysisSummary = customerAnalysisSummary(flight.AnalysisSummary)
+		}
 
 		flightWithExceedances := struct {
 			models.FlightLeg
@@ -670,27 +687,33 @@ func (h *CSVHandler) GetCSVByID(c *gin.Context) {
 		}
 	}
 
+	if !hasGlobalCompanyAccess(c) {
+		flight.AnalysisSummary = customerAnalysisSummary(flight.AnalysisSummary)
+	}
 	c.JSON(http.StatusOK, flight)
 }
 
 // Helper function to get exceedances for a CSV with related EventLog and Aircraft data
-func (h *CSVHandler) getCSVExceedances(csvID string) ([]models.Exceedance, error) {
-	query := `SELECT e.id, e.exceedanceValues, e.flightPhase, e.parameterName, e.description, e.eventStatus,
+func (h *CSVHandler) getCSVExceedances(csvID string, includeUnvalidated bool) ([]models.Exceedance, error) {
+	query := `SELECT e.id, COALESCE(e.exceedanceValues, ''), COALESCE(e.flightPhase, ''), COALESCE(e.parameterName, ''), COALESCE(e.description, ''), COALESCE(e.eventStatus, ''),
 			  e.aircraftId, COALESCE(e.flightLegId, e.flightId), e.file, e.eventId, e.comment, e.exceedanceLevel, e.createdAt, e.updatedAt,
-			  a.serialNumber as aircraftRegistration,
+			  COALESCE(NULLIF(a.registration, ''), a.serialNumber) as aircraftRegistration,
 			  ev.id as eventLogId, ev.eventName, ev.displayName, ev.eventCode, ev.eventDescription,
 			  ev.eventParameter, ev.eventTrigger, ev.eventType, ev.flightPhase as eventFlightPhase
 			  FROM Exceedance e
 			  LEFT JOIN Aircraft a ON e.aircraftId = a.id
 			  LEFT JOIN EventLog ev ON e.eventId = ev.id
 			  WHERE COALESCE(e.flightLegId, e.flightId) = ? AND e.isCurrent = 1`
+	if !includeUnvalidated {
+		query += " AND e.eventStatus = 'Valid'"
+	}
 	rows, err := h.db.Query(query, csvID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var exceedances []models.Exceedance
+	exceedances := make([]models.Exceedance, 0)
 	for rows.Next() {
 		var exceedance models.Exceedance
 		var createdAtStr, updatedAtStr sql.NullString
