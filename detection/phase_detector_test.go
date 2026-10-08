@@ -100,6 +100,17 @@ func TestDetectFlightPhasesUsesPopulatedAltitudeAlias(t *testing.T) {
 	}
 }
 
+func TestDetectFlightPhasesRecognizesGarminAltB(t *testing.T) {
+	path := writePhaseFixtureWithHeader(t, nil, []string{"Sample", "IAS", "AltB", "VSpd", "WOW", "E1 Torq"}, completeFlightRows())
+	result, err := DetectFlightPhases(path, PhaseOptions{AircraftProfile: "CARAVAN", SampleIntervalMs: 1000})
+	if err != nil {
+		t.Fatalf("DetectFlightPhases() error = %v", err)
+	}
+	if len(result.Flights) != 1 || result.Flights[0].Status != "COMPLETE" {
+		t.Fatalf("flights = %+v, want one complete flight", result.Flights)
+	}
+}
+
 func TestDetectFlightPhasesRealCaravanFixture(t *testing.T) {
 	directory := os.Getenv("PHASE_FIXTURE_DIR")
 	if directory == "" {

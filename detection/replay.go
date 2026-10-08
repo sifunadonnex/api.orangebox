@@ -1,7 +1,10 @@
 package detection
 
 import (
+	"encoding/csv"
+	"io"
 	"math"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -127,7 +130,7 @@ func NearestReplayPoint(points []ReplayPoint, targetTimeMs, toleranceMs int64) (
 var replayAliases = map[string][]string{
 	"latitude":      {"LATITUDE", "LAT", "GPSLATITUDE", "GPSLAT", "LATDEG", "LATITUDEDEG", "GPSLATITUDEDEG", "POSITIONLATITUDE", "POSLAT"},
 	"longitude":     {"LONGITUDE", "LON", "LONG", "LNG", "GPSLONGITUDE", "GPSLON", "LONDEG", "LONGITUDEDEG", "GPSLONGITUDEDEG", "POSITIONLONGITUDE", "POSLON"},
-	"altitude":      {"ALTMSL", "ALTITUDEMSL", "ALTITUDEAVG", "ALTB", "ALTGPS", "GPSALT", "GPSALTITUDE", "BAROALTITUDE", "PRESSUREALTITUDE", "ALTITUDEAGL", "ALTITUDEFT", "ALTITUDEM", "ALTITUDEMETERS", "ALTITUDEMETRES", "ALTITUDE"},
+	"altitude":      {"ALTMSL", "ALTITUDEMSL", "ALTITUDEAVG", "ALTB", "ALTIND", "ALTGPS", "GPSALT", "GPSALTITUDE", "BAROALTITUDE", "PRESSUREALTITUDE", "ALTITUDEAGL", "ALTITUDEFT", "ALTITUDEM", "ALTITUDEMETERS", "ALTITUDEMETRES", "ALTITUDE"},
 	"groundSpeed":   {"GNDSPD", "GROUNDSPEED", "GROUNDSPEEDKTS", "GS", "GSKTS", "GPSGROUNDSPEED", "GROUNDSPEEDKMH", "GROUNDSPEEDKPH", "GROUNDSPEEDMPS"},
 	"airspeed":      {"IAS", "AIRSPEEDAVG", "AIRSPEED", "INDICATEDAIRSPEED", "CALIBRATEDAIRSPEED", "CAS", "TRUEAIRSPEED", "TAS", "AIRSPEEDKMH", "AIRSPEEDKPH", "AIRSPEEDMPS"},
 	"heading":       {"TRK", "TRACK", "GPSTRACK", "COURSE", "HDG", "HEADING", "MAGNETICHEADING", "TRUEHEADING"},
@@ -158,16 +161,14 @@ func BuildReplay(path string, options ReplayOptions) (ReplayResult, error) {
 	for _, item := range parseDiagnostics {
 		diagnostics.add(item.Code, item.Severity, item.Message, "")
 	}
-	for name, aliases := range replayAliases {
-		if original, ok := resolveReplayHeader(headers, aliases); ok {
-			result.Mappings[name] = original
-		}
-	}
 	keys := make(map[string]string, len(replayAliases))
 	for name, aliases := range replayAliases {
-		keys[name] = replayKey(headers, aliases)
+		keys[name] = replayKey(headers, rows, aliases, name != "phase" && name != "airborne")
+		if keys[name] != "" {
+			result.Mappings[name] = headers[keys[name]]
+		}
 	}
-	result.Measurements = replayMeasurements(keys, result.Mappings)
+	result.Measurements = replayMeasurements(keys, result.Mappings, replayUnitHints(path))
 	latitudeKey := keys["latitude"]
 	longitudeKey := keys["longitude"]
 	if latitudeKey == "" || longitudeKey == "" {
@@ -231,9 +232,18 @@ func BuildReplay(path string, options ReplayOptions) (ReplayResult, error) {
 		if prior != nil {
 			deltaMs := point.TimeMs - prior.TimeMs
 			distance := haversineMeters(prior.Latitude, prior.Longitude, point.Latitude, point.Longitude)
-			implausible := deltaMs <= 0 || deltaMs > 120000
-			if deltaMs > 0 {
-				knots := distance / (float64(deltaMs) / 1000) * 1.9438444924
+			implausible := deltaMs < 0 || deltaMs > 120000
+			movementIntervalMs := deltaMs
+			if deltaMs == 0 {
+				// Garmin's whole-second clock can repeat while positions advance
+				// at the configured recording cadence.
+				movementIntervalMs = options.SampleIntervalMs
+				if movementIntervalMs <= 0 || movementIntervalMs > 10000 {
+					implausible = distance > 0
+				}
+			}
+			if movementIntervalMs > 0 {
+				knots := distance / (float64(movementIntervalMs) / 1000) * 1.9438444924
 				implausible = implausible || knots > 700
 			}
 			if implausible {
@@ -283,22 +293,73 @@ func BuildReplay(path string, options ReplayOptions) (ReplayResult, error) {
 	return result, nil
 }
 
-func resolveReplayHeader(headers map[string]string, aliases []string) (string, bool) {
+func replayKey(headers map[string]string, rows []rawRow, aliases []string, numeric bool) string {
+	best, bestCount := "", -1
 	for _, alias := range aliases {
-		if original, ok := headers[alias]; ok {
-			return original, true
+		if _, ok := headers[alias]; !ok {
+			continue
 		}
-	}
-	return "", false
-}
-
-func replayKey(headers map[string]string, aliases []string) string {
-	for _, alias := range aliases {
-		if _, ok := headers[alias]; ok {
+		if !numeric {
 			return alias
 		}
+		count := 0
+		for _, row := range rows {
+			if _, ok := numericValue(row.values, alias); ok {
+				count++
+			}
+		}
+		if count > bestCount {
+			best, bestCount = alias, count
+		}
 	}
-	return ""
+	return best
+}
+
+// Garmin recordings put a per-column units row immediately before the
+// telemetry header. Ordinary CSV files may have no units row.
+func replayUnitHints(path string) map[string]string {
+	hints := map[string]string{}
+	file, err := os.Open(path)
+	if err != nil {
+		return hints
+	}
+	defer file.Close()
+	reader := csv.NewReader(file)
+	reader.FieldsPerRecord = -1
+	reader.LazyQuotes = true
+	var previous []string
+	for line := 0; line < 50; line++ {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			break
+		}
+		if looksLikeCSVHeader(record) {
+			if len(previous) == len(record) && looksLikeReplayUnits(previous) {
+				for index, column := range record {
+					if key := canonical(column); key != "" {
+						hints[key] = strings.TrimSpace(previous[index])
+					}
+				}
+			}
+			break
+		}
+		previous = record
+	}
+	return hints
+}
+
+func looksLikeReplayUnits(record []string) bool {
+	count := 0
+	for _, value := range record {
+		switch canonical(value) {
+		case "FT", "FTMSL", "FTBARO", "FTAGL", "FEET", "M", "MT", "METERS", "METRES", "KT", "KTS", "FPM", "DEG", "DEGREES":
+			count++
+		}
+	}
+	return count >= 2
 }
 
 func numericValue(values map[string]string, key string) (float64, bool) {
@@ -317,7 +378,7 @@ func optionalNumeric(values map[string]string, key string) *float64 {
 	return &value
 }
 
-func replayMeasurements(keys, mappings map[string]string) map[string]ReplayMeasurement {
+func replayMeasurements(keys, mappings, unitHints map[string]string) map[string]ReplayMeasurement {
 	measurements := make(map[string]ReplayMeasurement)
 	for name, key := range keys {
 		if key == "" {
@@ -327,11 +388,11 @@ func replayMeasurements(keys, mappings map[string]string) map[string]ReplayMeasu
 		measurement := ReplayMeasurement{Source: source}
 		switch name {
 		case "altitude":
-			measurement.SourceUnit, measurement.Inferred = altitudeSourceUnit(key, source)
+			measurement.SourceUnit, measurement.Inferred = altitudeSourceUnit(key, source, unitHints[key])
 			if measurement.SourceUnit != "" {
 				measurement.Unit = "ft"
 			}
-			measurement.Reference = altitudeReference(key)
+			measurement.Reference = altitudeReference(key, unitHints[key])
 		case "groundSpeed", "airspeed":
 			measurement.SourceUnit, measurement.Inferred = speedSourceUnit(key, source)
 			if measurement.SourceUnit != "" {
@@ -351,7 +412,14 @@ func replayMeasurements(keys, mappings map[string]string) map[string]ReplayMeasu
 	return measurements
 }
 
-func altitudeSourceUnit(key, source string) (string, bool) {
+func altitudeSourceUnit(key, source, unitHint string) (string, bool) {
+	hint := canonical(unitHint)
+	if strings.HasPrefix(hint, "FT") || strings.Contains(hint, "FEET") {
+		return "ft", false
+	}
+	if hint == "M" || hint == "MT" || strings.HasPrefix(hint, "METER") || strings.HasPrefix(hint, "METRE") {
+		return "m", false
+	}
 	lower := strings.ToLower(source)
 	canonicalSource := canonical(source)
 	if strings.Contains(lower, "(m)") || strings.Contains(lower, "[m]") || strings.Contains(lower, " metres") || strings.Contains(lower, " meters") || strings.HasSuffix(canonicalSource, "METERS") || strings.HasSuffix(canonicalSource, "METRES") || key == "ALTITUDEM" {
@@ -362,7 +430,7 @@ func altitudeSourceUnit(key, source string) (string, bool) {
 	}
 	knownFeet := map[string]bool{
 		"ALTMSL": true, "ALTITUDEMSL": true, "ALTITUDEAVG": true, "ALTB": true,
-		"ALTGPS": true, "GPSALT": true, "GPSALTITUDE": true, "BAROALTITUDE": true,
+		"ALTIND": true, "ALTGPS": true, "GPSALT": true, "GPSALTITUDE": true, "BAROALTITUDE": true,
 		"PRESSUREALTITUDE": true, "ALTITUDEAGL": true,
 	}
 	if knownFeet[key] {
@@ -371,8 +439,15 @@ func altitudeSourceUnit(key, source string) (string, bool) {
 	return "", false
 }
 
-func altitudeReference(key string) string {
+func altitudeReference(key, unitHint string) string {
+	hint := canonical(unitHint)
 	switch {
+	case strings.Contains(hint, "AGL"):
+		return "AGL"
+	case strings.Contains(hint, "MSL"):
+		return "MSL"
+	case strings.Contains(hint, "BARO"):
+		return "pressure"
 	case strings.Contains(key, "AGL"):
 		return "AGL"
 	case strings.Contains(key, "PRESSURE"):

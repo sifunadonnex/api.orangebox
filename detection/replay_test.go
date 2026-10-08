@@ -116,6 +116,69 @@ func TestBuildReplayConvertsExplicitMetricMeasurements(t *testing.T) {
 	}
 }
 
+func TestBuildReplayUsesGarminUnitsAndKeepsPlausibleRepeatedClockSamplesTogether(t *testing.T) {
+	path := writeReplayCSV(t, "#airframe_info, airframe_name=\"Cessna 208B\"\n"+
+		"#yyy-mm-dd,hh:mm:ss,degrees,degrees,ft Baro,ft msl,kt,kt\n"+
+		"Lcl Date,Lcl Time,Latitude,Longitude,AltB,AltMSL,IAS,GndSpd\n"+
+		"2026-07-17,06:33:38,-0.6380,36.1436,12042,12750,124,162\n"+
+		"2026-07-17,06:33:40,-0.6385,36.1431,12042,12750,124,162\n"+
+		"2026-07-17,06:33:40,-0.6390,36.1426,12042,12750,124,162\n"+
+		"2026-07-17,06:33:41,-0.6395,36.1421,12042,12750,124,162\n")
+	result, err := BuildReplay(path, ReplayOptions{SampleIntervalMs: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Supported || result.Mappings["altitude"] != "AltMSL" {
+		t.Fatalf("unexpected replay mapping: %#v", result)
+	}
+	altitude := result.Measurements["altitude"]
+	if altitude.SourceUnit != "ft" || altitude.Reference != "MSL" || altitude.Inferred {
+		t.Fatalf("Garmin's explicit ft msl unit was not used: %#v", altitude)
+	}
+	for _, diagnostic := range result.Diagnostics {
+		if diagnostic.Code == "REPLAY_ALTITUDE_UNIT_INFERRED" || diagnostic.Code == "REPLAY_TRACK_SEGMENT_BREAK" {
+			t.Fatalf("unexpected diagnostic for a continuous route: %#v", diagnostic)
+		}
+	}
+	for _, point := range result.Points {
+		if point.Segment != 0 {
+			t.Fatalf("repeated whole-second clock split the route: %#v", point)
+		}
+	}
+}
+
+func TestBuildReplayUsesPopulatedAltitudeAlias(t *testing.T) {
+	path := writeReplayCSV(t, "#yyy-mm-dd,hh:mm:ss,degrees,degrees,ft msl,ft Baro\n"+
+		"Lcl Date,Lcl Time,Latitude,Longitude,AltMSL,AltB\n"+
+		"2026-07-17,06:33:38,-0.6380,36.1436,,12042\n"+
+		"2026-07-17,06:33:39,-0.6385,36.1431,,12043\n")
+	result, err := BuildReplay(path, ReplayOptions{SampleIntervalMs: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Mappings["altitude"] != "AltB" || result.Points[0].Altitude == nil || *result.Points[0].Altitude != 12042 {
+		t.Fatalf("populated altitude alias was not selected: %#v", result)
+	}
+}
+
+func TestBuildReplayStillSplitsImplausibleDuplicateClockMovement(t *testing.T) {
+	path := writeReplayCSV(t, "Lcl Date,Lcl Time,Latitude,Longitude,AltMSL\n"+
+		"2026-07-17,06:33:40,-0.6380,36.1436,12750\n"+
+		"2026-07-17,06:33:40,-1.6380,36.1436,12750\n"+
+		"2026-07-17,06:33:41,-1.6385,36.1431,12750\n")
+	result, err := BuildReplay(path, ReplayOptions{SampleIntervalMs: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, diagnostic := range result.Diagnostics {
+		found = found || diagnostic.Code == "REPLAY_TRACK_SEGMENT_BREAK"
+	}
+	if !found || result.Points[1].Segment != 1 {
+		t.Fatalf("implausible coordinate jump was not segmented: %#v", result)
+	}
+}
+
 func TestBuildReplayPreservesUnknownAltitudeInRecordedUnits(t *testing.T) {
 	path := writeReplayCSV(t, "Time(sec),Latitude,Longitude,Altitude\n0,-1.3,36.8,1000\n1,-1.29,36.81,1100\n")
 	result, err := BuildReplay(path, ReplayOptions{})
