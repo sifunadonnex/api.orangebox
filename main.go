@@ -203,7 +203,7 @@ func main() {
 			exceedances.GET("/:id", middleware.AnyAuthenticatedUser(), exceedanceHandler.GetExceedanceByID)
 			exceedances.GET("/flight/:id", middleware.AnyAuthenticatedUser(), exceedanceHandler.GetExceedancesByFlightID)
 			exceedances.POST("", middleware.GatekeeperOrAbove(), exceedanceHandler.CreateExceedances)
-			exceedances.PUT("/:id", middleware.AdminOrFDA(), exceedanceHandler.UpdateExceedance)
+			exceedances.PUT("/:id", middleware.GatekeeperOrAbove(), exceedanceHandler.UpdateExceedance)
 			exceedances.DELETE("/:id", middleware.AdminOrFDA(), exceedanceHandler.DeleteExceedance)
 		}
 

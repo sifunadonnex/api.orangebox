@@ -37,6 +37,12 @@ func accessFilter(c *gin.Context) (string, []interface{}, bool) {
 	if !companyOK {
 		return "", nil, false
 	}
+	if role == models.RoleGatekeeper {
+		return ` AND a.companyId = ? AND (e.eventStatus = 'Valid' OR EXISTS (
+			SELECT 1 FROM ExceedanceReview er WHERE er.exceedanceId = e.id
+			AND (er.previousStatus = 'Valid' OR er.newStatus = 'Valid')
+		))`, []interface{}{companyID}, true
+	}
 	return " AND a.companyId = ? AND e.eventStatus = ?", []interface{}{companyID, models.ExceedanceStatusValid}, true
 }
 
@@ -522,6 +528,11 @@ func (h *ExceedanceHandler) CreateExceedances(c *gin.Context) {
 // UpdateExceedance updates an existing exceedance
 func (h *ExceedanceHandler) UpdateExceedance(c *gin.Context) {
 	id := c.Param("id")
+	role, roleOK := contextString(c, "userRole")
+	if !roleOK || (role != models.RoleAdmin && role != models.RoleFDA && role != models.RoleGatekeeper) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You do not have permission to review exceedances"})
+		return
+	}
 	var req models.UpdateExceedanceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -585,12 +596,32 @@ func (h *ExceedanceHandler) UpdateExceedance(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error loading exceedance"})
 		return
 	}
-	if previousStatus == req.EventStatus {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Select a status different from the current status"})
-		return
+	if role == models.RoleGatekeeper {
+		if req.EventStatus == models.ExceedanceStatusPending {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Gatekeepers cannot return an exceedance to pending validation"})
+			return
+		}
+		var previouslyValidated bool
+		if previousStatus == models.ExceedanceStatusValid {
+			previouslyValidated = true
+		} else if err = tx.QueryRow(`SELECT EXISTS (
+			SELECT 1 FROM ExceedanceReview WHERE exceedanceId = ?
+			AND (previousStatus = 'Valid' OR newStatus = 'Valid')
+		)`, id).Scan(&previouslyValidated); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error checking validation history"})
+			return
+		}
+		if !previouslyValidated {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Gatekeepers can only review validated exceedances"})
+			return
+		}
 	}
 
 	now := time.Now()
+	action := "status_change"
+	if previousStatus == req.EventStatus {
+		action = "comment"
+	}
 	updateQuery := `UPDATE Exceedance SET comment = ?, eventStatus = ?, updatedAt = ? WHERE id = ? AND isCurrent = 1`
 	updateArgs := []interface{}{comment, req.EventStatus, now.UnixMilli(), id}
 	if !hasGlobalCompanyAccess(c) {
@@ -603,8 +634,8 @@ func (h *ExceedanceHandler) UpdateExceedance(c *gin.Context) {
 	}
 	if _, err = tx.Exec(`INSERT INTO ExceedanceReview
 		(id, exceedanceId, action, previousStatus, newStatus, comment, reviewedBy, createdAt)
-		VALUES (?, ?, 'status_change', ?, ?, ?, ?, ?)`,
-		uuid.NewString(), id, previousStatus, req.EventStatus, comment, userID, now.UnixMilli()); err != nil {
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		uuid.NewString(), id, action, previousStatus, req.EventStatus, comment, userID, now.UnixMilli()); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error recording exceedance review"})
 		return
 	}
