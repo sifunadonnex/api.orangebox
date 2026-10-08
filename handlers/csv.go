@@ -328,6 +328,13 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 			return
 		}
 	}
+	if uploadSource == "client_portal" {
+		if err = createRecordingUploadNotifications(tx, id, req.Name, aircraft.Registration, len(flights), now.UnixMilli()); err != nil {
+			cleanup()
+			respondDatabaseError(c, err)
+			return
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		cleanup()
 		respondDatabaseError(c, err)
@@ -362,6 +369,46 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 		"flights": flights, "flightCount": len(flights), "analyses": visibleAnalyses, "analysis": visibleAggregate,
 		"phaseDetection": phaseResponse, "ingestion": ingestionResult, "canonicalConversion": canonicalConversion,
 	})
+}
+
+func createRecordingUploadNotifications(tx *sql.Tx, recordingID, recordingName string, registration *string, flightCount int, now int64) error {
+	rows, err := tx.Query(`SELECT id FROM User WHERE isActive = 1 AND role IN ('admin', 'fda')`)
+	if err != nil {
+		return err
+	}
+	userIDs := make([]string, 0)
+	for rows.Next() {
+		var userID string
+		if err = rows.Scan(&userID); err != nil {
+			rows.Close()
+			return err
+		}
+		userIDs = append(userIDs, userID)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	aircraftName := "aircraft"
+	if registration != nil && strings.TrimSpace(*registration) != "" {
+		aircraftName = strings.TrimSpace(*registration)
+	}
+	flightLabel := "flights"
+	if flightCount == 1 {
+		flightLabel = "flight"
+	}
+	message := fmt.Sprintf("Customer uploaded %s for %s (%d %s). Review the recording and validate any detected events.",
+		recordingName, aircraftName, flightCount, flightLabel)
+	for _, userID := range userIDs {
+		if _, err = tx.Exec(`INSERT INTO Notification
+			(id, userId, recordingId, message, level, isRead, createdAt, updatedAt)
+			VALUES (?, ?, ?, ?, 'Review', 0, ?, ?)`, uuid.New().String(), userID, recordingID, message, now, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func safeRecordingStem(filename string) string {

@@ -56,8 +56,14 @@ func TestNestedExceedancesRespectValidation(t *testing.T) {
 
 func TestCustomerNotificationsAreValidatedAndCompanyScoped(t *testing.T) {
 	db := reportTestDB(t)
-	_, err := db.Exec(`CREATE TABLE Notification (id TEXT, userId TEXT, exceedanceId TEXT, message TEXT, level TEXT, isRead INTEGER, createdAt INTEGER, updatedAt INTEGER);
- INSERT INTO Notification VALUES ('valid','user-a','event-a-valid','Validated event','High',0,1,1), ('pending','user-a','event-a-pending','Unvalidated event','Critical',0,1,1), ('foreign','user-a','event-b-valid','Other company','Low',0,1,1)`)
+	_, err := db.Exec(`CREATE TABLE Csv (id TEXT PRIMARY KEY);
+ INSERT INTO Csv VALUES ('recording-a');
+ CREATE TABLE Notification (id TEXT, userId TEXT, exceedanceId TEXT, recordingId TEXT, message TEXT, level TEXT, isRead INTEGER, createdAt INTEGER, updatedAt INTEGER);
+ INSERT INTO Notification VALUES
+ ('valid','user-a','event-a-valid',NULL,'Validated event','High',0,1,1),
+ ('pending','user-a','event-a-pending',NULL,'Unvalidated event','Critical',0,1,1),
+ ('foreign','user-a','event-b-valid',NULL,'Other company','Low',0,1,1),
+ ('upload','user-a',NULL,'recording-a','Customer upload','Review',0,1,1)`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,10 +78,21 @@ func TestCustomerNotificationsAreValidatedAndCompanyScoped(t *testing.T) {
 		}
 		want := 1
 		if role == "admin" || role == "fda" {
-			want = 3
+			want = 4
 		}
 		if len(items) != want {
 			t.Fatalf("%s saw %d notifications, want %d", role, len(items), want)
+		}
+		if role == "admin" || role == "fda" {
+			found := false
+			for _, item := range items {
+				if item["recordingId"] == "recording-a" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("%s did not receive the customer upload notification", role)
+			}
 		}
 	}
 }

@@ -109,10 +109,11 @@ func (h *NotificationHandler) GetUserNotifications(c *gin.Context) {
 	}
 
 	query := `SELECT n.id, n.userId, n.exceedanceId, n.message, n.level, n.isRead, n.createdAt, n.updatedAt,
-			  COALESCE(e.flightLegId, e.flightId, ''), COALESCE(e.eventStatus, '')
+			  COALESCE(e.flightLegId, e.flightId, ''), COALESCE(e.eventStatus, ''), COALESCE(n.recordingId, '')
 			  FROM Notification n
-			  JOIN Exceedance e ON e.id = n.exceedanceId AND e.isCurrent = 1
-			  WHERE n.userId = ?
+			  LEFT JOIN Exceedance e ON e.id = n.exceedanceId AND e.isCurrent = 1
+			  LEFT JOIN Csv r ON r.id = n.recordingId
+			  WHERE n.userId = ? AND (e.id IS NOT NULL OR r.id IS NOT NULL)
 			  `
 	args := []any{userID}
 	if !hasGlobalCompanyAccess(c) {
@@ -120,7 +121,7 @@ func (h *NotificationHandler) GetUserNotifications(c *gin.Context) {
 		if !ok {
 			return
 		}
-		query += " AND e.eventStatus = 'Valid' AND EXISTS (SELECT 1 FROM Aircraft a WHERE a.id = e.aircraftId AND a.companyId = ?)"
+		query += " AND n.recordingId IS NULL AND e.eventStatus = 'Valid' AND EXISTS (SELECT 1 FROM Aircraft a WHERE a.id = e.aircraftId AND a.companyId = ?)"
 		args = append(args, companyID)
 	}
 	query += " ORDER BY n.createdAt DESC"
@@ -136,21 +137,24 @@ func (h *NotificationHandler) GetUserNotifications(c *gin.Context) {
 		models.Notification
 		FlightID    string `json:"flightId"`
 		EventStatus string `json:"eventStatus"`
+		RecordingID string `json:"recordingId,omitempty"`
 	}
 	notifications := make([]notificationResponse, 0)
 	for rows.Next() {
 		var notification models.Notification
-		var flightID, eventStatus string
+		var flightID, eventStatus, recordingID string
+		var exceedanceID sql.NullString
 		var createdAt, updatedAt nullableTimestamp
 
 		err := rows.Scan(&notification.ID, &notification.UserID,
-			&notification.ExceedanceID, &notification.Message,
+			&exceedanceID, &notification.Message,
 			&notification.Level, &notification.IsRead,
-			&createdAt, &updatedAt, &flightID, &eventStatus)
+			&createdAt, &updatedAt, &flightID, &eventStatus, &recordingID)
 
 		if err != nil {
 			continue
 		}
+		notification.ExceedanceID = exceedanceID.String
 
 		if createdAt.Valid {
 			notification.CreatedAt = createdAt.Time
@@ -162,6 +166,7 @@ func (h *NotificationHandler) GetUserNotifications(c *gin.Context) {
 			Notification: notification,
 			FlightID:     flightID,
 			EventStatus:  eventStatus,
+			RecordingID:  recordingID,
 		})
 	}
 
