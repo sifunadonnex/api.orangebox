@@ -163,7 +163,11 @@ func BuildReplay(path string, options ReplayOptions) (ReplayResult, error) {
 	}
 	keys := make(map[string]string, len(replayAliases))
 	for name, aliases := range replayAliases {
-		keys[name] = replayKey(headers, rows, aliases, name != "phase" && name != "airborne")
+		if name == "altitude" {
+			keys[name] = replayAltitudeKey(headers, rows, aliases)
+		} else {
+			keys[name] = replayKey(headers, rows, aliases, name != "phase" && name != "airborne")
+		}
 		if keys[name] != "" {
 			result.Mappings[name] = headers[keys[name]]
 		}
@@ -310,6 +314,34 @@ func replayKey(headers map[string]string, rows []rawRow, aliases []string, numer
 		}
 		if count > bestCount {
 			best, bestCount = alias, count
+		}
+	}
+	return best
+}
+
+// Prefer an MSL altitude for georeferenced replay when it is almost as
+// complete as a generic indicated-altitude channel. Garmin logs commonly
+// have a couple of missing GPS/AltMSL rows at the start of a recording.
+func replayAltitudeKey(headers map[string]string, rows []rawRow, aliases []string) string {
+	best := replayKey(headers, rows, aliases, true)
+	bestCount := 0
+	for _, row := range rows {
+		if _, ok := numericValue(row.values, best); ok {
+			bestCount++
+		}
+	}
+	for _, candidate := range []string{"ALTMSL", "ALTITUDEMSL", "ALTGPS", "GPSALT", "GPSALTITUDE"} {
+		if _, ok := headers[candidate]; !ok {
+			continue
+		}
+		count := 0
+		for _, row := range rows {
+			if _, ok := numericValue(row.values, candidate); ok {
+				count++
+			}
+		}
+		if count >= 2 && float64(count) >= float64(bestCount)*0.95 {
+			return candidate
 		}
 	}
 	return best

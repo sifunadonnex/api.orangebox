@@ -1,9 +1,11 @@
 package detection
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -158,6 +160,28 @@ func TestBuildReplayUsesPopulatedAltitudeAlias(t *testing.T) {
 	}
 	if result.Mappings["altitude"] != "AltB" || result.Points[0].Altitude == nil || *result.Points[0].Altitude != 12042 {
 		t.Fatalf("populated altitude alias was not selected: %#v", result)
+	}
+}
+
+func TestBuildReplayPrefersNearlyCompleteMSLOverIndicatedAltitude(t *testing.T) {
+	var csv strings.Builder
+	csv.WriteString("#sec,degrees,degrees,ft,ft msl\nTime(sec),Latitude,Longitude,AltInd,AltMSL\n")
+	for i := 0; i < 20; i++ {
+		msl := fmt.Sprintf("%d", 5500+i)
+		if i == 0 {
+			msl = ""
+		}
+		fmt.Fprintf(&csv, "%d,-1.31,36.81,%d,%s\n", i, 5400+i, msl)
+	}
+	result, err := BuildReplay(writeReplayCSV(t, csv.String()), ReplayOptions{SampleIntervalMs: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Mappings["altitude"] != "AltMSL" || result.Measurements["altitude"].Reference != "MSL" {
+		t.Fatalf("nearly complete MSL channel should be preferred: %#v", result.Measurements["altitude"])
+	}
+	if result.Points[0].Altitude != nil || result.Points[1].Altitude == nil || *result.Points[1].Altitude != 5501 {
+		t.Fatalf("missing MSL samples should not be filled with a different altitude reference: %#v", result.Points[:2])
 	}
 }
 
