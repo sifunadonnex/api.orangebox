@@ -70,9 +70,9 @@ func CanManageUsers(role string) bool {
 	return role == models.RoleAdmin
 }
 
-// CanValidateEvents checks if user can validate/approve events
+// CanValidateEvents checks event-definition workflow access; handlers enforce company scope.
 func CanValidateEvents(role string) bool {
-	return role == models.RoleAdmin || role == models.RoleFDA
+	return CanAddEvents(role)
 }
 
 // CanAddEvents checks if user can add new events

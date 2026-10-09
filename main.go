@@ -184,15 +184,8 @@ func main() {
 		// Event Management Routes
 		events := api.Group("/events")
 		{
-			events.GET("", middleware.AnyAuthenticatedUser(), eventHandler.GetEvents)
-			events.POST("", middleware.GatekeeperOrAbove(), eventHandler.CreateEvent)
-			events.POST("/validate", middleware.GatekeeperOrAbove(), eventHandler.ValidateEventPayload)
-			events.GET("/:id", middleware.AnyAuthenticatedUser(), eventHandler.GetEventByID)
-			events.PUT("/:id", middleware.AdminOrFDA(), eventHandler.UpdateEvent)
-			events.POST("/:id/validate", middleware.AdminOrFDA(), eventHandler.ValidateEventVersion)
-			events.POST("/:id/publish", middleware.AdminOrFDA(), eventHandler.PublishEventVersion)
+			eventHandler.RegisterRoutes(events)
 			events.POST("/:id/backfill", middleware.AdminOrFDA(), csvHandler.BackfillEvent)
-			events.DELETE("/:id", middleware.AdminOrFDA(), eventHandler.DeleteEvent)
 		}
 
 		// Exceedance Routes
