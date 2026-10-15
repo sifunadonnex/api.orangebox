@@ -371,15 +371,32 @@ func (h *ExceedanceHandler) GetExceedanceByID(c *gin.Context) {
 		return
 	}
 
+	// A v2 occurrence points at its immutable definition version, not EventLog.
+	// Resolve only after occurrence access has been authorized, and never use
+	// the latest definition (its limits may have changed since detection).
+	var recordedEvent interface{} = eventLogPtr
+	if exceedance.EventID != nil {
+		query := "SELECT " + eventSelectColumns + `
+			FROM EventDefinition d JOIN EventDefinitionVersion v ON v.definitionId = d.id
+			WHERE v.id = ?`
+		version, versionErr := NewEventHandler(h.db).scanEventBase(h.db.QueryRow(query, *exceedance.EventID))
+		if versionErr == nil {
+			recordedEvent = &version
+		} else if versionErr != sql.ErrNoRows {
+			respondDatabaseError(c, versionErr)
+			return
+		}
+	}
+
 	response := struct {
 		models.Exceedance
-		EventLog *models.EventLog          `json:"eventlog"`
+		EventLog interface{}               `json:"eventlog"`
 		CSV      models.CSV                `json:"csv"`
 		Aircraft models.Aircraft           `json:"aircraft"`
 		Reviews  []models.ExceedanceReview `json:"reviews"`
 	}{
 		Exceedance: exceedance,
-		EventLog:   eventLogPtr,
+		EventLog:   recordedEvent,
 		CSV:        csv,
 		Aircraft:   aircraft,
 		Reviews:    reviews,

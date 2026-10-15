@@ -13,6 +13,7 @@
 
 # Dependency directories
 vendor/
+nest-api/
 
 # Go workspace file
 go.work

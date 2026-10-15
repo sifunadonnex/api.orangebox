@@ -1,6 +1,8 @@
 # FDM API - Flight Data Monitoring Backend
 
-Production-ready Flight Data Monitoring (FDM) Backend API built with Go, Gin framework, and SQLite/PostgreSQL.
+The native TypeScript implementation is in [`nest-api`](nest-api/README.md), using NestJS, Bun, Fastify, and SQLite. It includes the flight-analysis and recorder-decoding engines. See its README for setup and migration instructions.
+
+The Go implementation is retained below as a migration reference.
 
 ## Features
 

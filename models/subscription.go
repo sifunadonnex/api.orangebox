@@ -34,7 +34,7 @@ type CreateSubscriptionRequest struct {
 	MaxAircraft        int        `json:"maxAircraft"`
 	MaxFlightsPerMonth int        `json:"maxFlightsPerMonth"`
 	MaxStorageGB       int        `json:"maxStorageGB"`
-	Price              float64    `json:"price" binding:"required"`
+	Price              float64    `json:"price" binding:"gte=0"`
 	Currency           string     `json:"currency"`
 	StartDate          *time.Time `json:"startDate"`
 	EndDate            *time.Time `json:"endDate"`
