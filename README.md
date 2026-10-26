@@ -189,3 +189,56 @@ marks it for re-analysis; metadata-only edits preserve existing results.
 ## License
 
 MIT License
+
+
+## API load controls
+
+Flight listing closes its parent cursor before fetching exceedances in batches of
+400 flight IDs. Tenant and event-validation filters remain enforced. Migration
+`023_exceedance_logical_flight_index.sql` indexes the legacy-compatible logical
+flight expression used by those lookups; it runs through the existing migration
+runner at the next application start.
+
+`GET /api/csv` and `GET /api/exceedances` accept optional `limit` (1-500) and
+`offset` (zero or greater, requires `limit`) query parameters. For example,
+`/api/csv?limit=50&offset=50` returns the second page with the same JSON shape.
+Clients without these parameters still receive the full list. The frontend must
+adopt pagination before large lists receive its full benefit.
+
+`FDM_RECORDING_CONCURRENCY` controls simultaneous recording uploads, reanalysis,
+event backfills, and uncached replay builds in the CSV handler. Default: **2**;
+allowed range: **1-32**. Excess work returns **503** with `Retry-After: 2` and
+`code: RECORDING_BUSY` before processing starts. Callers may retry rejected
+requests; running analysis is still synchronous and is not automatically retried.
+Choose this value from memory/CPU measurements with representative recordings.
+
+Replay responses are cached in process for **2 minutes**, with at most **8 entries**
+and **16 MiB** of retained JSON payloads. Larger responses are served without being
+retained. Concurrent requests for the same replay share one build. Every request
+still checks the flight's current company access and loads its phase timeline
+before accessing the cache. Keys include source file size/mtime, flight ID, row
+bounds, sample interval, phase content and engine versions. Stored recording files
+must remain immutable; replacing a source must change its modification time or
+size. Cache contents are private to the API process and disappear on restart.
+The cache budget excludes temporary memory used to parse recordings; work slots
+bound simultaneous parsing, not the size of an individual recording.
+
+Replay heading derivation searches once per consecutive run of identical GPS
+positions, avoiding repeated scans through long stationary sections. Recorded
+headings and segment boundaries are preserved.
+
+Detection transactions reuse prepared write statements and load notification
+recipients once per run. Existing transaction rollback and audit history remain
+in place. SQLite foreign keys, WAL and busy-timeout settings are unchanged.
+
+The HTTP server uses a 10-second header timeout and a 60-second idle keep-alive
+timeout. No whole-request write timeout is imposed on long uploads or analysis.
+
+### Verification
+
+Run `go test ./... -timeout 3m` for the regression suite. Optional real-recording
+fixtures remain controlled by their existing environment variables. Run
+`go test ./handlers -run '^$' -bench BenchmarkReplayResponseCache -benchmem`
+for a synthetic 10,000-row cold-versus-cached replay comparison. This benchmark
+measures replay construction/serialization and cache lookup, not production HTTP
+throughput or authentication/database latency.

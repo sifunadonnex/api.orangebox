@@ -303,6 +303,10 @@ func (h *CSVHandler) persistDetectionResult(runID, filename string, flight *mode
 		return err
 	}
 	defer tx.Rollback()
+	writes := &preparedWrites{tx: tx, statements: make(map[string]*sql.Stmt)}
+	defer writes.Close()
+	var recipients []string
+
 	now := time.Now().UnixMilli()
 	occurrenceCounts := make(map[string]int, len(definitions))
 	for _, occurrence := range response.Occurrences {
@@ -320,18 +324,18 @@ func (h *CSVHandler) persistDetectionResult(runID, filename string, flight *mode
 			status = "skipped"
 			isCurrent = 0
 		} else {
-			if _, err = tx.Exec(`UPDATE DetectionRunDefinition SET isCurrent = 0, supersededAt = ?
+			if _, err = writes.Exec(`UPDATE DetectionRunDefinition SET isCurrent = 0, supersededAt = ?
 				WHERE definitionId = ? AND isCurrent = 1 AND detectionRunId IN
 				(SELECT id FROM DetectionRun WHERE flightLegId = ?)`, now, definition.DefinitionID, flight.ID); err != nil {
 				return err
 			}
-			if _, err = tx.Exec(`UPDATE Exceedance SET isCurrent = 0, supersededAt = ?, updatedAt = ?
+			if _, err = writes.Exec(`UPDATE Exceedance SET isCurrent = 0, supersededAt = ?, updatedAt = ?
 				WHERE flightLegId = ? AND isCurrent = 1 AND eventId IN
 				(SELECT id FROM EventDefinitionVersion WHERE definitionId = ?)`, now, now, flight.ID, definition.DefinitionID); err != nil {
 				return err
 			}
 		}
-		if _, err = tx.Exec(`INSERT INTO DetectionRunDefinition
+		if _, err = writes.Exec(`INSERT INTO DetectionRunDefinition
 			(detectionRunId, definitionId, definitionVersionId, ruleHash, status,
 			 occurrenceCount, diagnosticsJson, isCurrent, createdAt)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, runID, definition.DefinitionID,
@@ -351,7 +355,7 @@ func (h *CSVHandler) persistDetectionResult(runID, filename string, flight *mode
 		}
 		exceedanceID := uuid.New().String()
 		level := titleSeverity(occurrence.Severity)
-		_, err = tx.Exec(`INSERT INTO Exceedance
+		_, err = writes.Exec(`INSERT INTO Exceedance
 			(id, exceedanceValues, flightPhase, parameterName, description, eventStatus,
 			 aircraftId, flightId, flightLegId, file, eventId, exceedanceLevel, detectionRunId,
 			 startTimeMs, endTimeMs, durationMs, peakValue, ruleHash, isCurrent, createdAt, updatedAt)
@@ -370,7 +374,7 @@ func (h *CSVHandler) persistDetectionResult(runID, filename string, flight *mode
 				if location.TimeDeltaMs == 0 {
 					quality = "exact"
 				}
-				if _, err = tx.Exec(`INSERT INTO ExceedanceLocation
+				if _, err = writes.Exec(`INSERT INTO ExceedanceLocation
 					(exceedanceId, latitude, longitude, altitude, matchedTimeMs, timeDeltaMs,
 					 source, quality, createdAt, updatedAt)
 					VALUES (?, ?, ?, ?, ?, ?, 'replay_nearest_time', ?, ?, ?)`,
@@ -380,23 +384,32 @@ func (h *CSVHandler) persistDetectionResult(runID, filename string, flight *mode
 				}
 			}
 		}
-		if err = createDetectionNotifications(tx, aircraft.CompanyID, exceedanceID, occurrence, now); err != nil {
+		// Load once after the first write has acquired SQLite's writer lock.
+		// Reading first in a deferred transaction can cause snapshot upgrades
+		// to fail when another detection run commits concurrently.
+		if occurrenceIndex == 0 {
+			recipients, err = detectionNotificationRecipients(tx, aircraft.CompanyID)
+			if err != nil {
+				return err
+			}
+		}
+		if err = createDetectionNotifications(writes, recipients, exceedanceID, occurrence, now); err != nil {
 			return err
 		}
 	}
-	_, err = tx.Exec(`UPDATE DetectionRun SET status = ?, timingSource = ?, rowCount = ?,
+	_, err = writes.Exec(`UPDATE DetectionRun SET status = ?, timingSource = ?, rowCount = ?,
 		evaluatedRuleCount = ?, occurrenceCount = ?, diagnosticsJson = ?, completedAt = ? WHERE id = ?`,
 		response.Status, response.TimingSource, response.RowCount, response.EvaluatedRuleCount,
 		response.OccurrenceCount, string(diagnosticsJSON), now, runID)
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(`UPDATE FlightLeg SET status = ?, analysisSummary = ?, updatedAt = ? WHERE id = ?`,
+	_, err = writes.Exec(`UPDATE FlightLeg SET status = ?, analysisSummary = ?, updatedAt = ? WHERE id = ?`,
 		response.Status, string(summaryJSON), now, flight.ID)
 	if err != nil {
 		return err
 	}
-	if err = refreshRecordingStatus(tx, flight.RecordingID, now); err != nil {
+	if err = refreshRecordingStatus(writes, flight.RecordingID, now); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
@@ -406,31 +419,35 @@ func (h *CSVHandler) persistDetectionResult(runID, filename string, flight *mode
 	return nil
 }
 
-func createDetectionNotifications(tx *sql.Tx, companyID, exceedanceID string, occurrence detection.Occurrence, now int64) error {
+func detectionNotificationRecipients(tx *sql.Tx, companyID string) ([]string, error) {
 	rows, err := tx.Query(`SELECT id FROM User WHERE companyId = ? AND isActive = 1
 		AND role IN ('admin', 'fda', 'gatekeeper')`, companyID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	userIDs := make([]string, 0)
 	for rows.Next() {
 		var id string
 		if err = rows.Scan(&id); err != nil {
 			rows.Close()
-			return err
+			return nil, err
 		}
 		userIDs = append(userIDs, id)
 	}
 	if err = rows.Err(); err != nil {
 		rows.Close()
-		return err
+		return nil, err
 	}
 	rows.Close()
+	return userIDs, nil
+}
+
+func createDetectionNotifications(writes sqlExecutor, userIDs []string, exceedanceID string, occurrence detection.Occurrence, now int64) error {
 	message := fmt.Sprintf("%s (%s) detected during %s: %s %.3f %s for %.3f seconds",
 		occurrence.EventName, occurrence.EventCode, occurrence.Phase, occurrence.ParameterID,
 		occurrence.Value, occurrence.Unit, float64(occurrence.DurationMs)/1000)
 	for _, userID := range userIDs {
-		_, err = tx.Exec(`INSERT INTO Notification
+		_, err := writes.Exec(`INSERT INTO Notification
 			(id, userId, exceedanceId, message, level, isRead, createdAt, updatedAt)
 			VALUES (?, ?, ?, ?, ?, 0, ?, ?)`, uuid.New().String(), userID, exceedanceID,
 			message, notificationLevel(occurrence.Severity), now, now)

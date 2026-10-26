@@ -57,6 +57,10 @@ func isValidExceedanceStatus(status string) bool {
 
 // GetExceedances retrieves all exceedances with related data
 func (h *ExceedanceHandler) GetExceedances(c *gin.Context) {
+	pageSQL, pageArgs, validPage := listPagination(c)
+	if !validPage {
+		return
+	}
 	query := `SELECT e.id, COALESCE(e.exceedanceValues, '') as exceedanceValues, COALESCE(e.flightPhase, '') as flightPhase, COALESCE(e.parameterName, '') as parameterName, COALESCE(e.description, '') as description, COALESCE(e.eventStatus, '') as eventStatus, COALESCE(e.aircraftId, '') as aircraftId, COALESCE(e.flightLegId, e.flightId, '') as flightId, e.file, e.eventId, e.comment, e.exceedanceLevel, e.detectionRunId, e.startTimeMs, e.endTimeMs, e.durationMs, e.peakValue, e.ruleHash, e.isCurrent, e.createdAt, e.updatedAt,
 			  el.id as eventlog_id, el.eventName, COALESCE(el.displayName, '') as displayName, COALESCE(el.eventCode, '') as eventCode, COALESCE(el.eventDescription, '') as eventDescription, COALESCE(el.eventParameter, '') as eventParameter, COALESCE(el.eventTrigger, '') as eventTrigger, COALESCE(el.eventType, '') as eventType, COALESCE(el.flightPhase, '') as eventlog_flightPhase, el.high, el.high1, el.high2, el.low, el.low1, el.low2, el.triggerType, el.detectionPeriod, el.severities, COALESCE(el.sop, '') as sop, COALESCE(el.aircraftId, '') as eventlog_aircraftId, el.createdAt as eventlog_createdAt, el.updatedAt as eventlog_updatedAt,
 			  f.id as csv_id, COALESCE(f.name, '') as name, COALESCE(c.file, '') as csv_file, f.status, f.departure, f.pilot, f.destination, f.flightHours, COALESCE(f.aircraftId, '') as csv_aircraftId, f.createdAt as csv_createdAt, f.updatedAt as csv_updatedAt,
@@ -75,9 +79,11 @@ func (h *ExceedanceHandler) GetExceedances(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "No company access is assigned to this account"})
 		return
 	}
-	query += filter + " ORDER BY e.createdAt DESC"
+	query += filter + " ORDER BY e.createdAt DESC, e.id DESC"
+	query += pageSQL
+	args = append(args, pageArgs...)
 
-	rows, err := h.db.Query(query, args...)
+	rows, err := h.db.QueryContext(c.Request.Context(), query, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return

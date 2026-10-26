@@ -7,6 +7,7 @@ import (
 	"fdm-backend/middleware"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -234,7 +235,12 @@ func main() {
 	// Start server
 	port := config.GetPort()
 	log.Printf("Server starting on http://localhost:%s", port)
-	if err := router.Run(":" + port); err != nil {
+	server := &http.Server{
+		Addr: ":" + port, Handler: router,
+		ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second,
+		MaxHeaderBytes: 1 << 20,
+	}
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatal("Failed to start server:", err)
 	}
 }

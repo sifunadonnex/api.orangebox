@@ -3,6 +3,7 @@ package handlers
 import (
 	"database/sql"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
@@ -29,6 +30,7 @@ func TestExceedanceListContractAgainstDatabaseCopy(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodGet, "/api/exceedances", nil)
 	context.Set("userRole", models.RoleAdmin)
 
 	NewExceedanceHandler(db).GetExceedances(context)

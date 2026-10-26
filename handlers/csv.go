@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/csv"
@@ -22,15 +23,21 @@ import (
 )
 
 type CSVHandler struct {
-	db *sql.DB
+	db      *sql.DB
+	replays *replayCache
+	work    chan struct{}
 }
 
 func NewCSVHandler(db *sql.DB) *CSVHandler {
-	return &CSVHandler{db: db}
+	return &CSVHandler{db: db, replays: newReplayCache(), work: make(chan struct{}, recordingConcurrency())}
 }
 
 // UploadCSV handles CSV file upload
 func (h *CSVHandler) UploadCSV(c *gin.Context) {
+	if !acquireRecordingWork(c, h.work) {
+		return
+	}
+	defer releaseRecordingWork(h.work)
 	var req models.UploadCSVRequest
 	if err := c.ShouldBind(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -491,8 +498,18 @@ func errorDetail(err error) string {
 	return err.Error()
 }
 
+type listedFlight struct {
+	models.FlightLeg
+	Aircraft   *models.Aircraft    `json:"aircraft"`
+	Exceedance []models.Exceedance `json:"Exceedance"`
+}
+
 // GetCSVs retrieves logical flights with their source-recording metadata.
 func (h *CSVHandler) GetCSVs(c *gin.Context) {
+	pageSQL, pageArgs, validPage := listPagination(c)
+	if !validPage {
+		return
+	}
 	query := `SELECT f.id, f.recordingId, f.name, c.file, f.status, f.departure, f.pilot,
 			  f.destination, f.flightHours, f.aircraftId, c.sampleIntervalMs,
 			  f.flightDate, f.flightNumber, f.picCrewCode, f.foCrewCode,
@@ -519,14 +536,17 @@ func (h *CSVHandler) GetCSVs(c *gin.Context) {
 		args = append(args, companyID)
 	}
 	query += " ORDER BY f.createdAt DESC, f.recordingId, f.legIndex"
-	rows, err := h.db.Query(query, args...)
+	query += pageSQL
+	args = append(args, pageArgs...)
+	rows, err := h.db.QueryContext(c.Request.Context(), query, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
 	}
 	defer rows.Close()
 
-	var flights []interface{}
+	var flights []listedFlight
+	var flightIDs []string
 	for rows.Next() {
 		var flight models.FlightLeg
 		var aircraft models.Aircraft
@@ -613,29 +633,34 @@ func (h *CSVHandler) GetCSVs(c *gin.Context) {
 			aircraftPtr = &aircraft
 		}
 
-		// Get related exceedances
-		exceedances, err := h.getCSVExceedances(flight.ID, hasGlobalCompanyAccess(c))
-		if err != nil {
-			respondDatabaseError(c, err)
-			return
-		}
 		if !hasGlobalCompanyAccess(c) {
 			flight.AnalysisSummary = customerAnalysisSummary(flight.AnalysisSummary)
 		}
 
-		flightWithExceedances := struct {
-			models.FlightLeg
-			Aircraft   *models.Aircraft    `json:"aircraft"`
-			Exceedance []models.Exceedance `json:"Exceedance"`
-		}{
-			FlightLeg:  flight,
-			Aircraft:   aircraftPtr,
-			Exceedance: exceedances,
-		}
-
+		flightWithExceedances := listedFlight{FlightLeg: flight, Aircraft: aircraftPtr, Exceedance: []models.Exceedance{}}
+		flightIDs = append(flightIDs, flight.ID)
 		flights = append(flights, flightWithExceedances)
 	}
 
+	if err = rows.Err(); err != nil {
+		respondDatabaseError(c, err)
+		return
+	}
+	// Release the parent cursor before acquiring a connection for child rows.
+	if err = rows.Close(); err != nil {
+		respondDatabaseError(c, err)
+		return
+	}
+	exceedances, err := h.getFlightsExceedances(c.Request.Context(), flightIDs, hasGlobalCompanyAccess(c))
+	if err != nil {
+		respondDatabaseError(c, err)
+		return
+	}
+	for index := range flights {
+		if items := exceedances[flights[index].ID]; items != nil {
+			flights[index].Exceedance = items
+		}
+	}
 	c.JSON(http.StatusOK, flights)
 }
 
@@ -742,6 +767,35 @@ func (h *CSVHandler) GetCSVByID(c *gin.Context) {
 
 // Helper function to get exceedances for a CSV with related EventLog and Aircraft data
 func (h *CSVHandler) getCSVExceedances(csvID string, includeUnvalidated bool) ([]models.Exceedance, error) {
+	grouped, err := h.getFlightsExceedances(context.Background(), []string{csvID}, includeUnvalidated)
+	items := grouped[csvID]
+	if items == nil {
+		items = []models.Exceedance{}
+	}
+	return items, err
+}
+
+// Bound SQL parameters and scan each chunk after its parent cursor is closed.
+func (h *CSVHandler) getFlightsExceedances(ctx context.Context, ids []string, includeUnvalidated bool) (map[string][]models.Exceedance, error) {
+	grouped := make(map[string][]models.Exceedance)
+	const chunkSize = 400
+	for start := 0; start < len(ids); start += chunkSize {
+		end := start + chunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		items, err := h.queryFlightExceedances(ctx, ids[start:end], includeUnvalidated)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			grouped[item.FlightID] = append(grouped[item.FlightID], item)
+		}
+	}
+	return grouped, nil
+}
+
+func (h *CSVHandler) queryFlightExceedances(ctx context.Context, ids []string, includeUnvalidated bool) ([]models.Exceedance, error) {
 	query := `SELECT e.id, COALESCE(e.exceedanceValues, ''), COALESCE(e.flightPhase, ''), COALESCE(e.parameterName, ''), COALESCE(e.description, ''), COALESCE(e.eventStatus, ''),
 			  e.aircraftId, COALESCE(e.flightLegId, e.flightId), e.file, e.eventId, e.comment, e.exceedanceLevel, e.createdAt, e.updatedAt,
 			  COALESCE(NULLIF(a.registration, ''), a.serialNumber) as aircraftRegistration,
@@ -750,11 +804,15 @@ func (h *CSVHandler) getCSVExceedances(csvID string, includeUnvalidated bool) ([
 			  FROM Exceedance e
 			  LEFT JOIN Aircraft a ON e.aircraftId = a.id
 			  LEFT JOIN EventLog ev ON e.eventId = ev.id
-			  WHERE COALESCE(e.flightLegId, e.flightId) = ? AND e.isCurrent = 1`
+			  WHERE COALESCE(e.flightLegId, e.flightId) IN (` + strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",") + `) AND e.isCurrent = 1`
 	if !includeUnvalidated {
 		query += " AND e.eventStatus = 'Valid'"
 	}
-	rows, err := h.db.Query(query, csvID)
+	args := make([]any, len(ids))
+	for index, id := range ids {
+		args[index] = id
+	}
+	rows, err := h.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -777,7 +835,7 @@ func (h *CSVHandler) getCSVExceedances(csvID string, includeUnvalidated bool) ([
 			&eventLogId, &eventName, &displayName, &eventCode, &eventDescription,
 			&eventParameter, &eventTrigger, &eventType, &eventFlightPhase)
 		if err != nil {
-			continue
+			return nil, err
 		}
 
 		// Parse timestamps
@@ -834,7 +892,7 @@ func (h *CSVHandler) getCSVExceedances(csvID string, includeUnvalidated bool) ([
 		exceedances = append(exceedances, exceedance)
 	}
 
-	return exceedances, nil
+	return exceedances, rows.Err()
 }
 
 // DeleteCSV deletes a CSV file and its associated data

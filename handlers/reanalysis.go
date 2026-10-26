@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -59,25 +61,48 @@ func (h *CSVHandler) GetFlightReplay(c *gin.Context) {
 		respondDatabaseError(c, err)
 		return
 	}
-	replay, err := detection.BuildReplay(path, detection.ReplayOptions{
-		SampleIntervalMs: valueOrZeroInt64(flight.SampleIntervalMs),
-		MaxPoints:        10000,
-		StartRow:         flight.StartRow,
-		EndRow:           valueOrZeroInt(flight.EndRow),
-		RebaseTime:       true,
-		PhaseRuns:        phaseRuns,
+	options := detection.ReplayOptions{
+		SampleIntervalMs: valueOrZeroInt64(flight.SampleIntervalMs), MaxPoints: 10000,
+		StartRow: flight.StartRow, EndRow: valueOrZeroInt(flight.EndRow), RebaseTime: true, PhaseRuns: phaseRuns,
+	}
+	key, err := replayCacheKey(path, flight.ID, options)
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	body, err := h.replays.get(c.Request.Context(), key, func() ([]byte, error) {
+		if !tryRecordingWork(h.work) {
+			return nil, errRecordingBusy
+		}
+		defer releaseRecordingWork(h.work)
+		replay, buildErr := detection.BuildReplay(path, options)
+		if buildErr != nil {
+			return nil, buildErr
+		}
+		return json.Marshal(gin.H{"success": true, "data": replay})
 	})
 	if err != nil {
+		if errors.Is(err, errRecordingBusy) {
+			respondRecordingBusy(c)
+			return
+		}
+		if c.Request.Context().Err() != nil {
+			return
+		}
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": replay})
+	c.Data(http.StatusOK, "application/json; charset=utf-8", body)
 }
 
 // ReanalyzeCSV evaluates a stored flight without requiring its source file to
 // be uploaded again. By default an identical completed run is reused; callers
 // may explicitly request ?force=true to produce a fresh audited run.
 func (h *CSVHandler) ReanalyzeCSV(c *gin.Context) {
+	if !acquireRecordingWork(c, h.work) {
+		return
+	}
+	defer releaseRecordingWork(h.work)
 	flight, aircraft, err := h.getStoredFlight(c.Param("id"))
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Flight not found"})
@@ -122,6 +147,10 @@ func (h *CSVHandler) ReanalyzeCSV(c *gin.Context) {
 // published version and its assignments. Runs are committed per flight, so a
 // bad or missing source file cannot roll back successful flights.
 func (h *CSVHandler) BackfillEvent(c *gin.Context) {
+	if !acquireRecordingWork(c, h.work) {
+		return
+	}
+	defer releaseRecordingWork(h.work)
 	definitionID := c.Param("id")
 	companyID, err := h.getBackfillEventCompany(definitionID)
 	if err == sql.ErrNoRows {

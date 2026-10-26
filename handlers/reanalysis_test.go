@@ -168,4 +168,40 @@ func TestPersistDetectionResultSupersedesOnlyAffectedDefinition(t *testing.T) {
 	if skippedCurrent != 0 {
 		t.Fatalf("skipped evaluation must not become current, got %d", skippedCurrent)
 	}
+	// A later notification failure must roll back earlier occurrences, locations,
+	// notifications and superseding updates from the same prepared transaction.
+	_, err = db.Exec(`INSERT INTO User VALUES ('active-admin', 'company-1', 1, 'admin');
+		INSERT INTO DetectionRun VALUES ('failed-run', 'flight-1', 'processing', NULL, 0, 0, 0, '[]', NULL, 'flight-1');
+		CREATE TRIGGER fail_notification BEFORE INSERT ON Notification
+		WHEN NEW.message LIKE '%FAIL%'
+		BEGIN SELECT RAISE(ABORT, 'forced notification failure'); END;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedResponse := response
+	failedResponse.RunID, failedResponse.OccurrenceCount = "failed-run", 2
+	failedResponse.Occurrences = []detection.Occurrence{response.Occurrences[0], response.Occurrences[0]}
+	for index := range failedResponse.Occurrences {
+		failedResponse.Occurrences[index].VersionID = "a-v3"
+		failedResponse.Occurrences[index].RuleHash = "newer-a"
+	}
+	failedResponse.Occurrences[1].EventName = "FAIL"
+	if err = handler.persistDetectionResult("failed-run", "flight.csv", &flight, aircraft, skippedDefinitions, failedResponse); err == nil {
+		t.Fatal("expected notification failure")
+	}
+	assertCurrent("old-b", 1)
+	if err = db.QueryRow("SELECT COUNT(*) FROM Exceedance WHERE eventId = 'a-v2' AND isCurrent = 1").Scan(&newCount); err != nil || newCount != 1 {
+		t.Fatalf("rollback lost previous finding: count=%d error=%v", newCount, err)
+	}
+	for _, query := range []string{
+		"SELECT COUNT(*) FROM Notification",
+		"SELECT COUNT(*) FROM Exceedance WHERE eventId = 'a-v3'",
+		"SELECT COUNT(*) FROM DetectionRunDefinition WHERE detectionRunId = 'failed-run'",
+	} {
+		var count int
+		if err = db.QueryRow(query).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("partial detection commit: %s count=%d error=%v", query, count, err)
+		}
+	}
+
 }

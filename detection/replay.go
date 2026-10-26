@@ -667,15 +667,31 @@ func floatPointer(value float64) *float64 {
 func deriveReplayHeadings(points []ReplayPoint) string {
 	recorded := 0
 	derived := 0
-	for i := range points {
-		if points[i].Heading != nil {
-			recorded++
-			continue
+	for start := 0; start < len(points); {
+		end := start + 1
+		for end < len(points) && points[end].Segment == points[start].Segment &&
+			points[end].Latitude == points[start].Latitude && points[end].Longitude == points[start].Longitude {
+			end++
 		}
-		if heading, ok := neighboringTrack(points, i); ok {
-			points[i].Heading = floatPointer(heading)
-			derived++
+		// All samples in an identical-position run have the same first moving
+		// neighbor on either side. Search once, preserving recorded headings.
+		var heading float64
+		found, searched := false, false
+		for index := start; index < end; index++ {
+			if points[index].Heading != nil {
+				recorded++
+				continue
+			}
+			if !searched {
+				heading, found = neighboringTrack(points, start)
+				searched = true
+			}
+			if found {
+				points[index].Heading = floatPointer(heading)
+				derived++
+			}
 		}
+		start = end
 	}
 	switch {
 	case recorded > 0 && derived > 0:
