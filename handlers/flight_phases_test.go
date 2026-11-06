@@ -34,10 +34,10 @@ func TestStreamCSVRangeUsesTelemetryHeaderAndAddsDetectedPhase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 3 || records[0][0] != "Lcl Date" || records[0][4] != "Detected Phase" {
+	if len(records) != 4 || records[0][0] != "Lcl Date" || records[0][4] != "Detected Phase" {
 		t.Fatalf("unexpected enriched CSV header: %#v", records)
 	}
-	if records[1][4] != "TAKEOFF" || records[2][4] != "TAKEOFF" {
+	if records[2][4] != "TAKEOFF" || records[3][4] != "TAKEOFF" {
 		t.Fatalf("detected phases were not appended: %#v", records)
 	}
 }

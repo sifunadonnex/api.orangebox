@@ -288,6 +288,15 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 			recording.PhaseSummary = stringPointer(string(phaseJSON))
 		}
 	}
+	ranges := make([]detection.RowRange, len(segments))
+	for index, segment := range segments {
+		ranges[index] = detection.RowRange{StartRow: segment.StartRow, EndRow: segment.EndRow}
+	}
+	var hoursPhases *detection.PhaseDetectionResult
+	if phaseErr == nil {
+		hoursPhases = &phaseResult
+	}
+	hourEstimates := detection.EstimateFlightHours(csvPath, ranges, hoursPhases)
 	flights := make([]models.FlightLeg, 0, len(segments))
 	for index, segment := range segments {
 		flightID := uuid.New().String()
@@ -300,6 +309,9 @@ func (h *CSVHandler) UploadCSV(c *gin.Context) {
 		if len(segments) > 1 {
 			flightName = fmt.Sprintf("%s · Flight %d", req.Name, index+1)
 			departure, destination, flightHours, pilot = nil, nil, nil, nil
+		}
+		if (flightHours == nil || strings.TrimSpace(*flightHours) == "") && hourEstimates[index] != nil {
+			flightHours = stringPointer(hourEstimates[index].Hours)
 		}
 		startSample, endSample := optionalStringPointer(segment.StartSample), optionalStringPointer(segment.EndSample)
 		endRow := segment.EndRow
@@ -1021,7 +1033,7 @@ func streamCSVRange(c *gin.Context, path, flightName string, startRow, endRow in
 	reader.FieldsPerRecord = -1
 	reader.LazyQuotes = true
 	headerLine := 0
-	var header []string
+	var header, preceding []string
 	for line := 1; line <= 50; line++ {
 		record, readErr := reader.Read()
 		if readErr == io.EOF {
@@ -1035,9 +1047,26 @@ func streamCSVRange(c *gin.Context, path, flightName string, startRow, endRow in
 			header = append([]string(nil), record...)
 			break
 		}
+		preceding = append([]string(nil), record...)
 	}
 	if headerLine == 0 {
 		return fmt.Errorf("CSV header was not found in the first 50 rows")
+	}
+	// Preserve recorder-supplied units, including a pre-header row that would
+	// otherwise be lost when serving a scoped flight. Never derive engineering units.
+	var units []string
+	if isCSVUnitRecord(preceding, len(header)) {
+		units = normalizedCSVUnitRecord(preceding, len(header))
+	}
+	pending, peekErr := reader.Read()
+	if peekErr != nil && peekErr != io.EOF {
+		return peekErr
+	}
+	recordNumber := headerLine
+	if peekErr == nil && isCSVUnitRecord(pending, len(header)) {
+		units = normalizedCSVUnitRecord(pending, len(header))
+		pending = nil
+		recordNumber++
 	}
 	header = append(header, "Detected Phase")
 	safeName := strings.NewReplacer("\"", "", "\r", "", "\n", "").Replace(strings.TrimSpace(flightName))
@@ -1050,10 +1079,20 @@ func streamCSVRange(c *gin.Context, path, flightName string, startRow, endRow in
 	if err = writer.Write(header); err != nil {
 		return err
 	}
-	recordNumber := headerLine
+	if len(units) > 0 {
+		if err = writer.Write(append(units, "")); err != nil {
+			return err
+		}
+	}
 	runIndex := 0
 	for {
-		record, readErr := reader.Read()
+		var record []string
+		var readErr error
+		if pending != nil {
+			record, pending = pending, nil
+		} else {
+			record, readErr = reader.Read()
+		}
 		if readErr == io.EOF {
 			break
 		}
@@ -1074,6 +1113,9 @@ func streamCSVRange(c *gin.Context, path, flightName string, startRow, endRow in
 		if runIndex < len(phaseRuns) && recordNumber >= phaseRuns[runIndex].StartRow && recordNumber <= phaseRuns[runIndex].EndRow {
 			phase = phaseRuns[runIndex].Phase
 		}
+		if len(record) < len(header)-1 {
+			record = append(record, make([]string, len(header)-1-len(record))...)
+		}
 		record = append(record, phase)
 		if err = writer.Write(record); err != nil {
 			return err
@@ -1092,6 +1134,7 @@ func isFlightCSVHeader(record []string) bool {
 	nonEmpty := 0
 	hasKnown := false
 	for _, value := range record {
+		value = csvUnitSuffix.ReplaceAllString(value, "")
 		key := strings.Map(func(character rune) rune {
 			if character >= 'a' && character <= 'z' {
 				return character - ('a' - 'A')

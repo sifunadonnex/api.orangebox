@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -19,9 +20,10 @@ import (
 )
 
 type recordingReviewResponse struct {
-	Recording models.CSV              `json:"recording"`
-	Flights   []models.FlightLeg      `json:"flights"`
-	Rows      detection.RecordingRows `json:"rows"`
+	FlightHourEstimates map[string]*detection.FlightHoursEstimate `json:"flightHourEstimates,omitempty"`
+	Recording           models.CSV                                `json:"recording"`
+	Flights             []models.FlightLeg                        `json:"flights"`
+	Rows                detection.RecordingRows                   `json:"rows"`
 }
 
 type reviewedFlightInput struct {
@@ -393,6 +395,25 @@ func (h *CSVHandler) loadRecordingReview(recordingID string) (recordingReviewRes
 	}
 	for index := range response.Flights {
 		response.Flights[index].RecordingFlightCount = len(response.Flights)
+	}
+	rows.Close()
+	// Suggestions are recomputed for current boundaries without changing saved metadata.
+	ranges := make([]detection.RowRange, len(response.Flights))
+	for index, flight := range response.Flights {
+		ranges[index] = detection.RowRange{StartRow: flight.StartRow, EndRow: *flight.EndRow}
+	}
+	var phaseJSON sql.NullString
+	var phaseResult detection.PhaseDetectionResult
+	var phases *detection.PhaseDetectionResult
+	if h.db.QueryRow("SELECT phaseSummary FROM Csv WHERE id = ?", recordingID).Scan(&phaseJSON) == nil && phaseJSON.Valid && json.Unmarshal([]byte(phaseJSON.String), &phaseResult) == nil {
+		phases = &phaseResult
+	}
+	estimates := detection.EstimateFlightHours(path, ranges, phases)
+	response.FlightHourEstimates = make(map[string]*detection.FlightHoursEstimate)
+	for index, estimate := range estimates {
+		if estimate != nil {
+			response.FlightHourEstimates[response.Flights[index].ID] = estimate
+		}
 	}
 	return response, companyID, nil
 }
